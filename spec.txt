@@ -1,0 +1,1112 @@
+# tpt-webrtc Design Specification
+
+## Mission
+
+Build a complete, production-ready WebRTC implementation in pure Rust that provides:
+- **Full Protocol Stack**: ICE, STUN, TURN, DTLS-SRTP, RTP/RTCP, SCTP data channels
+- **Modern Codecs**: AV1-first, VP8/VP9, Opus audio, with hardware acceleration
+- **Zero libwebrtc Dependency**: No Google C++ code, no hidden patent traps, no build hell
+- **Formally Verified State Machines**: ICE and DTLS handshakes proven correct via `tpt-telos`
+- **Async-Native Architecture**: Built on `tokio` for high-concurrency server and client use
+
+This is not a wrapper around libwebrtc. This is a ground-up reimplementation that replaces Google's 2-million-line C++ behemoth with a memory-safe, MIT-licensed, formally verified alternative.
+
+---
+
+## The Problem We're Solving
+
+### The libwebrtc Monopoly
+Google's `libwebrtc` is the de facto standard for WebRTC, but it has fundamental flaws:
+- **2 million lines of C++**: A memory safety nightmare (Heartbleed-style vulnerabilities are inevitable)
+- **Build hell**: Requires GN build system, dozens of dependencies, and is notoriously difficult to embed
+- **Google-controlled**: Not truly open-source; Google dictates the roadmap and can change licensing terms
+- **Hidden patent traps**: While BSD-3-Clause, it includes Google's patent grants that may not transfer to derivatives
+- **No formal verification**: Critical state machines (ICE, DTLS) are not mathematically proven correct
+
+### The Licensing Minefield
+WebRTC involves multiple patent-encumbered technologies:
+- **H.264**: MPEG-LA patent licensing (royalty-bearing for distributors)
+- **VP8**: Google's patent grant (but unclear if it extends to derivatives)
+- **VP9**: Open, but Google-controlled
+- **AV1**: Alliance for Open Media (AOM) patent pool, royalty-free, truly open
+
+**Our Strategy**: AV1-first, VP9 fallback, avoid H.264 entirely. This eliminates the patent royalty risk.
+
+---
+
+## Architecture Overview
+┌─────────────────────────────────────────────────────────────────┐
+│ tpt-webrtc-app (Application Layer) │
+│ - High-level PeerConnection API │
+│ - Media stream management │
+│ - Signaling integration (WebSocket, HTTP) │
+├─────────────────────────────────────────────────────────────────┤
+│ tpt-webrtc-codecs (Codec Layer) │
+│ - AV1 encoder/decoder (via rav1e/dav1d or hardware accel) │
+│ - VP8/VP9 encoder/decoder (via vpx or hardware accel) │
+│ - Opus encoder/decoder (pure Rust or libopus wrapper) │
+│ - Hardware acceleration (NVENC, QSV, VideoToolbox, VAAPI) │
+├─────────────────────────────────────────────────────────────────┤
+│ tpt-webrtc-media (Media Processing) │
+│ - Audio processing (AEC, NS, AGC) │
+│ - Video processing (scaling, color conversion, simulcast) │
+│ - Jitter buffer management │
+│ - Bandwidth estimation (GCC, BBR, TWCC) │
+├─────────────────────────────────────────────────────────────────┤
+│ tpt-webrtc-sctp (Data Channels) │
+│ - SCTP over DTLS (RFC 8831) │
+│ - Reliable and unreliable channels │
+│ - Ordered and unordered delivery │
+├─────────────────────────────────────────────────────────────────┤
+│ tpt-webrtc-rtp (Media Transport) │
+│ - RTP/RTCP packetization/depacketization │
+│ - Payload-specific packetizers (AV1, VP8, VP9, Opus) │
+│ - RTCP feedback (NACK, PLI, FIR, REMB, TWCC) │
+│ - Simulcast and SVC layer selection │
+├─────────────────────────────────────────────────────────────────┤
+│ tpt-webrtc-dtls (Security Layer) │
+│ - DTLS 1.2 handshake (RFC 6347) │
+│ - SRTP key derivation (RFC 3711) │
+│ - Certificate management and fingerprinting │
+│ - Formally verified state machine (via tpt-telos) │
+├─────────────────────────────────────────────────────────────────┤
+│ tpt-webrtc-ice (Connectivity) │
+│ - ICE agent (RFC 8445) │
+│ - STUN client/server (RFC 8489) │
+│ - TURN client (RFC 8656) │
+│ - Candidate gathering, pairing, nomination │
+│ - Formally verified state machine (via tpt-telos) │
+├─────────────────────────────────────────────────────────────────┤
+│ tpt-webrtc-sdp (Session Description) │
+│ - SDP parser/generator (RFC 8866) │
+│ - WebRTC-specific SDP extensions (BUNDLE, RTCP-MUX) │
+│ - Offer/answer model │
+├─────────────────────────────────────────────────────────────────┤
+│ tpt-webrtc-core (Foundation) │
+│ - Async runtime integration (tokio) │
+│ - Socket abstraction (UDP, TCP) │
+│ - Error handling and logging │
+│ - Cryptographic primitives (via tpt-math or ring) │
+└─────────────────────────────────────────────────────────────────┘
+
+
+---
+
+## Module Specifications
+
+### 1. tpt-webrtc-core (Foundation Layer)
+
+**Purpose**: Async runtime, socket abstraction, error handling, and cryptographic primitives.
+
+**Dependencies**: `tokio` (MIT), `ring` (MIT/OpenSSL), `tpt-math-linalg` (for matrix operations)
+
+**License**: MIT
+
+#### Core Types
+
+```rust
+pub struct WebRtcConfig {
+    pub ice_servers: Vec<IceServer>,
+    pub codec_preferences: CodecPreferences,
+    pub bandwidth_estimation: BweAlgorithm,
+    pub dtls_certificates: Vec<DtlsCertificate>,
+}
+
+pub struct IceServer {
+    pub urls: Vec<String>,
+    pub username: Option<String>,
+    pub credential: Option<String>,
+}
+
+pub enum BweAlgorithm {
+    GoogleCongestionControl,
+    Bbr,
+    Remb,
+    Twcc,
+}
+
+pub trait WebRtcSocket: Send + Sync {
+    fn send_to(&self, buf: &[u8], addr: SocketAddr) -> impl Future<Output = Result<usize, Error>>;
+    fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = Result<(usize, SocketAddr), Error>>;
+}
+
+Error Handling
+
+pub enum WebRtcError {
+    Ice(IceError),
+    Dtls(DtlsError),
+    Rtp(RtpError),
+    Sctp(SctpError),
+    Codec(CodecError),
+    Sdp(SdpError),
+    Io(std::io::Error),
+}
+
+pub enum IceError {
+    NoCandidatesAvailable,
+    ConnectivityCheckFailed,
+    NominationTimeout,
+    InvalidState,
+}
+
+pub enum DtlsError {
+    HandshakeFailed,
+    CertificateVerificationFailed,
+    DecryptionFailed,
+    InvalidState,
+}
+
+2. tpt-webrtc-sdp (Session Description)
+Purpose: Parse and generate SDP for WebRTC offer/answer model.
+Dependencies: tpt-webrtc-core
+License: MIT
+SDP Parser
+
+pub struct SdpSession {
+    pub version: u32,
+    pub origin: Origin,
+    pub session_name: String,
+    pub timing: Timing,
+    pub attributes: Vec<Attribute>,
+    pub media_descriptions: Vec<MediaDescription>,
+}
+
+pub struct MediaDescription {
+    pub media_type: MediaType,
+    pub port: u16,
+    pub protocol: String,
+    pub formats: Vec<String>,
+    pub attributes: Vec<Attribute>,
+}
+
+pub enum Attribute {
+    RtpMap { payload_type: u8, codec: String, clock_rate: u32, channels: Option<u32> },
+    Fmtp { payload_type: u8, parameters: String },
+    IceUfrag(String),
+    IcePwd(String),
+    IceCandidate(IceCandidate),
+    Fingerprint { hash_algorithm: String, fingerprint: Vec<u8> },
+    Setup(SetupRole),
+    Mid(String),
+    Bundle,
+    RtcpMux,
+    Simulcast(SimulcastConfig),
+    ExtMap { id: u32, uri: String },
+    Ssrc(SsrcAttribute),
+    SsrcGroup(SsrcGroupAttribute),
+    Custom(String, Option<String>),
+}
+
+pub fn parse_sdp(input: &str) -> Result<SdpSession, SdpError>;
+pub fn generate_sdp(session: &SdpSession) -> Result<String, SdpError>;
+
+Offer/Answer Model
+
+pub struct OfferAnswerModel;
+
+impl OfferAnswerModel {
+    pub fn create_offer(config: &WebRtcConfig) -> Result<SdpSession, Error>;
+    pub fn create_answer(offer: &SdpSession, config: &WebRtcConfig) -> Result<SdpSession, Error>;
+    pub fn negotiate_codecs(local: &SdpSession, remote: &SdpSession) -> Result<CodecNegotiation, Error>;
+}
+
+pub struct CodecNegotiation {
+    pub audio_codecs: Vec<NegotiatedCodec>,
+    pub video_codecs: Vec<NegotiatedCodec>,
+    pub data_channels: bool,
+}
+
+3. tpt-webrtc-ice (Connectivity Layer)
+Purpose: ICE agent for NAT traversal, STUN/TURN client/server.
+Dependencies: tpt-webrtc-core, tpt-webrtc-sdp, tpt-math-rng (for transaction IDs)
+License: MIT
+ICE Agent State Machine
+.
+pub enum IceState {
+    New,
+    Gathering,
+    Waiting,
+    Checking,
+    Connected,
+    Completed,
+    Failed,
+    Disconnected,
+    Closed,
+}
+
+pub struct IceAgent {
+    state: IceState,
+    local_candidates: Vec<IceCandidate>,
+    remote_candidates: Vec<IceCandidate>,
+    candidate_pairs: Vec<CandidatePair>,
+    nominated_pair: Option<CandidatePair>,
+    stun_client: StunClient,
+    turn_client: Option<TurnClient>,
+}
+
+impl IceAgent {
+    pub fn new(config: IceConfig) -> Self;
+    pub fn gather_candidates(&mut self) -> impl Future<Output = Result<Vec<IceCandidate>, IceError>>;
+    pub fn add_remote_candidate(&mut self, candidate: IceCandidate);
+    pub fn check_connectivity(&mut self) -> impl Future<Output = Result<(), IceError>>;
+    pub fn nominate_pair(&mut self) -> impl Future<Output = Result<CandidatePair, IceError>>;
+    pub fn state(&self) -> IceState;
+}
+
+STUN Protocol
+
+pub struct StunMessage {
+    pub message_type: StunMessageType,
+    pub transaction_id: [u8; 12],
+    pub attributes: Vec<StunAttribute>,
+}
+
+pub enum StunMessageType {
+    BindingRequest,
+    BindingResponse,
+    BindingErrorResponse,
+    BindingIndication,
+}
+
+pub enum StunAttribute {
+    MappedAddress(SocketAddr),
+    XorMappedAddress(SocketAddr),
+    Username(String),
+    MessageIntegrity(Vec<u8>),
+    Fingerprint(u32),
+    ErrorCode(u16, String),
+    Realm(String),
+    Nonce(String),
+    Software(String),
+    Priority(u32),
+    UseCandidate,
+    IceControlled(u64),
+    IceControlling(u64),
+}
+
+pub struct StunClient;
+
+impl StunClient {
+    pub fn create_binding_request() -> StunMessage;
+    pub fn parse_message(data: &[u8]) -> Result<StunMessage, StunError>;
+    pub fn serialize_message(msg: &StunMessage) -> Vec<u8>;
+    pub fn verify_integrity(msg: &StunMessage, key: &[u8]) -> bool;
+}
+
+TURN Protocol
+
+pub struct TurnClient {
+    server: SocketAddr,
+    username: String,
+    password: String,
+    realm: String,
+    nonce: String,
+    allocation: Option<TurnAllocation>,
+}
+
+pub struct TurnAllocation {
+    pub relayed_address: SocketAddr,
+    pub lifetime: Duration,
+}
+
+impl TurnClient {
+    pub fn new(server: SocketAddr, username: String, password: String) -> Self;
+    pub fn allocate(&mut self) -> impl Future<Output = Result<TurnAllocation, TurnError>>;
+    pub fn create_permission(&mut self, peer_address: SocketAddr) -> impl Future<Output = Result<(), TurnError>>;
+    pub fn send_indication(&mut self, data: &[u8], peer_address: SocketAddr) -> impl Future<Output = Result<(), TurnError>>;
+    pub fn refresh(&mut self) -> impl Future<Output = Result<(), TurnError>>;
+}
+
+Formal Verification (via tpt-telos)
+
+// Formal contracts for ICE state machine
+#[requires(initial_state == IceState::New)]
+#[ensures(result.state == IceState::Gathering || result.state == IceState::Failed)]
+pub fn gather_candidates(agent: &mut IceAgent) -> Result<Vec<IceCandidate>, IceError>;
+
+#[requires(agent.state == IceState::Checking)]
+#[ensures(result.is_ok() ==> agent.state == IceState::Connected || agent.state == IceState::Failed)]
+pub fn check_connectivity(agent: &mut IceAgent) -> Result<(), IceError>;
+
+// Formal contracts for STUN message integrity
+#[requires(key.len() > 0)]
+#[ensures(result ==> verify_integrity(msg, key))]
+pub fn sign_message(msg: &mut StunMessage, key: &[u8]);
+
+4. tpt-webrtc-dtls (Security Layer)
+Purpose: DTLS 1.2 handshake and SRTP key derivation.
+Dependencies: tpt-webrtc-core, ring (for crypto), tpt-math-hash (for fingerprinting)
+License: MIT
+DTLS State Machine
+
+pub enum DtlsState {
+    New,
+    Connecting,
+    Connected,
+    Failed,
+    Closed,
+}
+
+pub struct DtlsTransport {
+    state: DtlsState,
+    role: DtlsRole,
+    local_certificate: DtlsCertificate,
+    remote_fingerprint: Option<Fingerprint>,
+    srtp_keys: Option<SrtpKeys>,
+    handshake: DtlsHandshake,
+}
+
+pub enum DtlsRole {
+    Client,
+    Server,
+    Auto,
+}
+
+impl DtlsTransport {
+    pub fn new(config: DtlsConfig) -> Self;
+    pub fn start_handshake(&mut self) -> impl Future<Output = Result<(), DtlsError>>;
+    pub fn process_packet(&mut self, data: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>, DtlsError>>;
+    pub fn send_application_data(&mut self, data: &[u8]) -> impl Future<Output = Result<(), DtlsError>>;
+    pub fn state(&self) -> DtlsState;
+    pub fn srtp_keys(&self) -> Option<&SrtpKeys>;
+}
+
+SRTP Key Derivation
+
+pub struct SrtpKeys {
+    pub client_write_key: Vec<u8>,
+    pub client_write_salt: Vec<u8>,
+    pub server_write_key: Vec<u8>,
+    pub server_write_salt: Vec<u8>,
+}
+
+pub struct SrtpSession {
+    keys: SrtpKeys,
+    role: DtlsRole,
+    cipher: SrtpCipher,
+}
+
+pub enum SrtpCipher {
+    Aes128CmHmacSha1_80,
+    Aes256CmHmacSha1_80,
+    AeadAes128Gcm,
+    AeadAes256Gcm,
+}
+
+impl SrtpSession {
+    pub fn new(keys: SrtpKeys, role: DtlsRole, cipher: SrtpCipher) -> Self;
+    pub fn protect_rtp(&self, packet: &mut RtpPacket) -> Result<(), SrtpError>;
+    pub fn unprotect_rtp(&self, packet: &mut RtpPacket) -> Result<(), SrtpError>;
+    pub fn protect_rtcp(&self, packet: &mut RtcpPacket) -> Result<(), SrtpError>;
+    pub fn unprotect_rtcp(&self, packet: &mut RtcpPacket) -> Result<(), SrtpError>;
+}
+
+Formal Verification (via tpt-telos)
+
+// Formal contracts for DTLS handshake
+#[requires(role == DtlsRole::Client || role == DtlsRole::Server)]
+#[ensures(result.is_ok() ==> transport.state == DtlsState::Connected)]
+#[ensures(result.is_ok() ==> transport.srtp_keys().is_some())]
+pub fn start_handshake(transport: &mut DtlsTransport) -> Result<(), DtlsError>;
+
+// Formal contracts for SRTP protection
+#[requires(keys.client_write_key.len() == 16 || keys.client_write_key.len() == 32)]
+#[ensures(result.is_ok() ==> packet.authenticated)]
+pub fn protect_rtp(session: &SrtpSession, packet: &mut RtpPacket) -> Result<(), SrtpError>;
+
+5. tpt-webrtc-rtp (Media Transport)
+Purpose: RTP/RTCP packetization, payload-specific packetizers, RTCP feedback.
+Dependencies: tpt-webrtc-core, tpt-webrtc-dtls
+License: MIT
+RTP Packet
+
+pub struct RtpPacket {
+    pub version: u8,
+    pub padding: bool,
+    pub extension: bool,
+    pub csrc_count: u8,
+    pub marker: bool,
+    pub payload_type: u8,
+    pub sequence_number: u16,
+    pub timestamp: u32,
+    pub ssrc: u32,
+    pub csrc: Vec<u32>,
+    pub extension_profile: Option<u16>,
+    pub extension_data: Option<Vec<u8>>,
+    pub payload: Vec<u8>,
+    pub authenticated: bool,
+    pub auth_tag: Option<Vec<u8>>,
+}
+
+impl RtpPacket {
+    pub fn parse(data: &[u8]) -> Result<Self, RtpError>;
+    pub fn serialize(&self) -> Vec<u8>;
+    pub fn payload_size(&self) -> usize;
+}
+
+Payload-Specific Packetizers
+
+pub trait Packetizer {
+    fn packetize(&self, frame: &MediaFrame, mtu: usize) -> Result<Vec<RtpPacket>, PacketizerError>;
+    fn depacketize(&self, packets: &[RtpPacket]) -> Result<MediaFrame, DepacketizerError>;
+}
+
+pub struct Av1Packetizer;
+impl Packetizer for Av1Packetizer {
+    fn packetize(&self, frame: &MediaFrame, mtu: usize) -> Result<Vec<RtpPacket>, PacketizerError>;
+    fn depacketize(&self, packets: &[RtpPacket]) -> Result<MediaFrame, DepacketizerError>;
+}
+
+pub struct Vp8Packetizer;
+impl Packetizer for Vp8Packetizer { /* ... */ }
+
+pub struct Vp9Packetizer;
+impl Packetizer for Vp9Packetizer { /* ... */ }
+
+pub struct OpusPacketizer;
+impl Packetizer for OpusPacketizer { /* ... */ }
+
+RTCP Feedback
+
+pub enum RtcpPacket {
+    SenderReport(SenderReport),
+    ReceiverReport(ReceiverReport),
+    SourceDescription(SourceDescription),
+    Goodbye(Goodbye),
+    TransportLayerFeedback(TransportLayerFeedback),
+    PayloadSpecificFeedback(PayloadSpecificFeedback),
+}
+
+pub enum TransportLayerFeedback {
+    Nack(Nack),
+    Twcc(TransportWideCongestionControl),
+}
+
+pub enum PayloadSpecificFeedback {
+    Pli(PictureLossIndication),
+    Fir(FullIntraRequest),
+    Remb(ReceiverEstimatedMaximumBitrate),
+}
+
+impl RtcpPacket {
+    pub fn parse(data: &[u8]) -> Result<Self, RtcpError>;
+    pub fn serialize(&self) -> Vec<u8>;
+}
+
+Jitter Buffer
+
+pub struct JitterBuffer {
+    packets: BTreeMap<(u32, u16), RtpPacket>, // (SSRC, sequence number) -> packet
+    target_delay: Duration,
+    max_delay: Duration,
+}
+
+impl JitterBuffer {
+    pub fn new(target_delay: Duration, max_delay: Duration) -> Self;
+    pub fn insert(&mut self, packet: RtpPacket);
+    pub fn get_frame(&mut self, ssrc: u32) -> Option<Vec<RtpPacket>>;
+    pub fn flush(&mut self);
+}
+
+6. tpt-webrtc-sctp (Data Channels)
+Purpose: SCTP over DTLS for WebRTC data channels.
+Dependencies: tpt-webrtc-core, tpt-webrtc-dtls
+License: MIT
+SCTP Association
+
+pub struct SctpAssociation {
+    state: SctpState,
+    local_port: u16,
+    remote_port: u16,
+    streams: HashMap<u16, SctpStream>,
+    dtls_transport: Arc<Mutex<DtlsTransport>>,
+}
+
+pub enum SctpState {
+    Closed,
+    CookieWait,
+    CookieEchoed,
+    Established,
+    ShutdownPending,
+    ShutdownSent,
+    ShutdownReceived,
+    ShutdownAckSent,
+}
+
+impl SctpAssociation {
+    pub fn new(local_port: u16, remote_port: u16, dtls: Arc<Mutex<DtlsTransport>>) -> Self;
+    pub fn open_stream(&mut self, stream_id: u16, ordered: bool, reliability: Reliability) -> Result<(), SctpError>;
+    pub fn send(&mut self, stream_id: u16, data: &[u8], ppid: u32) -> impl Future<Output = Result<(), SctpError>>;
+    pub fn recv(&mut self) -> impl Future<Output = Result<SctpMessage, SctpError>>;
+    pub fn close_stream(&mut self, stream_id: u16) -> Result<(), SctpError>;
+}
+
+pub struct SctpMessage {
+    pub stream_id: u16,
+    pub ppid: u32,
+    pub data: Vec<u8>,
+    pub ordered: bool,
+}
+
+pub enum Reliability {
+    Reliable,
+    PartialReliableRexmit(u32),
+    PartialReliableTimed(Duration),
+    Unreliable,
+}
+
+7. tpt-webrtc-codecs (Codec Layer)
+Purpose: Video and audio codec encoding/decoding with hardware acceleration.
+Dependencies: tpt-webrtc-core, rav1e (AV1 encoder, MIT), dav1d (AV1 decoder, BSD-2-Clause), vpx (VP8/VP9, BSD-3-Clause), opus (audio, BSD-3-Clause)
+License: MIT
+Video Codec Abstraction
+
+pub trait VideoEncoder: Send + Sync {
+    fn encode(&mut self, frame: &VideoFrame) -> Result<Vec<EncodedPacket>, CodecError>;
+    fn set_bitrate(&mut self, bitrate: u32) -> Result<(), CodecError>;
+    fn request_keyframe(&mut self);
+    fn set_resolution(&mut self, width: u32, height: u32) -> Result<(), CodecError>;
+    fn set_framerate(&mut self, fps: u32) -> Result<(), CodecError>;
+}
+
+pub trait VideoDecoder: Send + Sync {
+    fn decode(&mut self, packet: &EncodedPacket) -> Result<Vec<VideoFrame>, CodecError>;
+    fn flush(&mut self) -> Result<Vec<VideoFrame>, CodecError>;
+}
+
+pub struct VideoFrame {
+    pub width: u32,
+    pub height: u32,
+    pub format: PixelFormat,
+    pub data: Vec<u8>,
+    pub timestamp: Duration,
+}
+
+pub enum PixelFormat {
+    Yuv420,
+    Yuv422,
+    Yuv444,
+    Nv12,
+    Rgba,
+}
+
+pub struct EncodedPacket {
+    pub data: Vec<u8>,
+    pub timestamp: Duration,
+    pub is_keyframe: bool,
+    pub codec: VideoCodec,
+}
+
+pub enum VideoCodec {
+    Av1,
+    Vp8,
+    Vp9,
+}
+
+AV1 Codec (AV1-First Strategy)
+
+pub struct Av1Encoder {
+    encoder: rav1e::Context<u8>,
+    config: Av1EncoderConfig,
+}
+
+pub struct Av1EncoderConfig {
+    pub width: u32,
+    pub height: u32,
+    pub bitrate: u32,
+    pub framerate: u32,
+    pub speed_preset: u8, // 0-10, lower is slower but better quality
+    pub keyframe_interval: u32,
+}
+
+impl VideoEncoder for Av1Encoder {
+    fn encode(&mut self, frame: &VideoFrame) -> Result<Vec<EncodedPacket>, CodecError> {
+        let frame_info = rav1e::FrameInfo { /* ... */ };
+        let packets = self.encoder.send_and_retrieve(frame_info)?;
+        Ok(packets.into_iter().map(|p| EncodedPacket {
+            data: p.data.to_vec(),
+            timestamp: frame.timestamp,
+            is_keyframe: p.frame_type == rav1e::FrameType::Key,
+            codec: VideoCodec::Av1,
+        }).collect())
+    }
+    // ... other methods
+}
+
+pub struct Av1Decoder {
+    decoder: dav1d::Context,
+}
+
+impl VideoDecoder for Av1Decoder {
+    fn decode(&mut self, packet: &EncodedPacket) -> Result<Vec<VideoFrame>, CodecError> {
+        let frames = self.decoder.send(&packet.data)?;
+        Ok(frames.into_iter().map(|f| VideoFrame {
+            width: f.width(),
+            height: f.height(),
+            format: PixelFormat::Yuv420,
+            data: f.data().to_vec(),
+            timestamp: packet.timestamp,
+        }).collect())
+    }
+    // ... other methods
+}
+
+Hardware Acceleration
+
+pub struct HardwareEncoder {
+    backend: HardwareBackend,
+    encoder: Box<dyn VideoEncoder>,
+}
+
+pub enum HardwareBackend {
+    NvEnc,      // NVIDIA NVENC
+    Qsv,        // Intel Quick Sync Video
+    VideoToolbox, // Apple VideoToolbox
+    Vaapi,      // VA-API (Linux)
+}
+
+impl HardwareEncoder {
+    pub fn new(backend: HardwareBackend, codec: VideoCodec) -> Result<Self, CodecError> {
+        let encoder = match backend {
+            HardwareBackend::NvEnc => Box::new(NvencEncoder::new(codec)?),
+            HardwareBackend::Qsv => Box::new(QsvEncoder::new(codec)?),
+            HardwareBackend::VideoToolbox => Box::new(VideoToolboxEncoder::new(codec)?),
+            HardwareBackend::Vaapi => Box::new(VaapiEncoder::new(codec)?),
+        };
+        Ok(Self { backend, encoder })
+    }
+}
+
+impl VideoEncoder for HardwareEncoder {
+    fn encode(&mut self, frame: &VideoFrame) -> Result<Vec<EncodedPacket>, CodecError> {
+        self.encoder.encode(frame)
+    }
+    // ... delegate other methods
+}
+
+Audio Codec (Opus)
+
+pub struct OpusEncoder {
+    encoder: opus::Encoder,
+    config: OpusEncoderConfig,
+}
+
+pub struct OpusEncoderConfig {
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub bitrate: u32,
+    pub complexity: u8, // 0-10
+    pub application: OpusApplication,
+}
+
+pub enum OpusApplication {
+    Voip,
+    Audio,
+    LowDelay,
+}
+
+pub trait AudioEncoder: Send + Sync {
+    fn encode(&mut self, frame: &AudioFrame) -> Result<Vec<u8>, CodecError>;
+    fn set_bitrate(&mut self, bitrate: u32) -> Result<(), CodecError>;
+}
+
+pub struct AudioFrame {
+    pub samples: Vec<i16>,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub timestamp: Duration,
+}
+
+impl AudioEncoder for OpusEncoder {
+    fn encode(&mut self, frame: &AudioFrame) -> Result<Vec<u8>, CodecError> {
+        let mut output = vec![0u8; 4000]; // Max Opus packet size
+        let len = self.encoder.encode(&frame.samples, &mut output)?;
+        output.truncate(len);
+        Ok(output)
+    }
+    // ... other methods
+}
+
+8. tpt-webrtc-media (Media Processing)
+Purpose: Audio/video processing, jitter buffer, bandwidth estimation.
+Dependencies: tpt-webrtc-core, tpt-webrtc-codecs, tpt-webrtc-rtp
+License: MIT
+Audio Processing
+
+pub struct AudioProcessingPipeline {
+    aec: AcousticEchoCanceller,
+    ns: NoiseSuppressor,
+    agc: AutomaticGainControl,
+}
+
+pub trait AcousticEchoCanceller: Send + Sync {
+    fn process(&mut self, mic_signal: &mut [i16], speaker_signal: &[i16]);
+}
+
+pub trait NoiseSuppressor: Send + Sync {
+    fn process(&mut self, signal: &mut [i16]);
+}
+
+pub trait AutomaticGainControl: Send + Sync {
+    fn process(&mut self, signal: &mut [i16]);
+}
+
+// Implementations using pure-Rust DSP or wrappers around speex/Webrtc-APM
+
+Bandwidth Estimation
+
+pub enum BweAlgorithm {
+    GoogleCongestionControl(GccEstimator),
+    Bbr(BbrEstimator),
+    Remb(RembEstimator),
+    Twcc(TwccEstimator),
+}
+
+pub trait BandwidthEstimator: Send + Sync {
+    fn on_rtcp(&mut self, packet: &RtcpPacket);
+    fn on_rtp_sent(&mut self, packet: &RtpPacket, send_time: Instant);
+    fn estimate_bitrate(&self) -> u32;
+}
+
+pub struct GccEstimator {
+    // Google Congestion Control algorithm
+    // Implements delay-based and loss-based estimation
+}
+
+impl BandwidthEstimator for GccEstimator {
+    fn on_rtcp(&mut self, packet: &RtcpPacket) {
+        if let RtcpPacket::TransportLayerFeedback(TransportLayerFeedback::Twcc(twcc)) = packet {
+            self.process_twcc_feedback(twcc);
+        }
+    }
+    fn estimate_bitrate(&self) -> u32 {
+        self.current_estimate
+    }
+    // ... other methods
+}
+
+Video Processing
+
+pub struct VideoProcessingPipeline {
+    scaler: VideoScaler,
+    color_converter: ColorConverter,
+    simulcast_encoder: SimulcastEncoder,
+}
+
+pub struct SimulcastEncoder {
+    layers: Vec<SimulcastLayer>,
+}
+
+pub struct SimulcastLayer {
+    pub rid: String,
+    pub width: u32,
+    pub height: u32,
+    pub max_bitrate: u32,
+    pub encoder: Box<dyn VideoEncoder>,
+}
+
+impl SimulcastEncoder {
+    pub fn encode(&mut self, frame: &VideoFrame) -> Result<Vec<(String, Vec<EncodedPacket>)>, CodecError> {
+        let mut results = Vec::new();
+        for layer in &mut self.layers {
+            let scaled_frame = self.scaler.scale(frame, layer.width, layer.height)?;
+            let packets = layer.encoder.encode(&scaled_frame)?;
+            results.push((layer.rid.clone(), packets));
+        }
+        Ok(results)
+    }
+}
+
+9. tpt-webrtc-app (Application Layer)
+Purpose: High-level PeerConnection API, media stream management, signaling integration.
+Dependencies: All other tpt-webrtc-* crates
+License: MIT
+PeerConnection
+
+pub struct PeerConnection {
+    config: PeerConnectionConfig,
+    ice_agent: IceAgent,
+    dtls_transport: DtlsTransport,
+    sctp_transport: Option<SctpAssociation>,
+    rtp_transceivers: Vec<RtpTransceiver>,
+    data_channels: HashMap<String, DataChannel>,
+    signaling_state: SignalingState,
+    ice_connection_state: IceConnectionState,
+    peer_connection_state: PeerConnectionState,
+}
+
+pub enum SignalingState {
+    Stable,
+    HaveLocalOffer,
+    HaveRemoteOffer,
+    HaveLocalPranswer,
+    HaveRemotePranswer,
+    Closed,
+}
+
+pub enum IceConnectionState {
+    New,
+    Checking,
+    Connected,
+    Completed,
+    Failed,
+    Disconnected,
+    Closed,
+}
+
+pub enum PeerConnectionState {
+    New,
+    Connecting,
+    Connected,
+    Disconnected,
+    Failed,
+    Closed,
+}
+
+impl PeerConnection {
+    pub fn new(config: PeerConnectionConfig) -> Result<Self, Error>;
+    pub fn create_offer(&mut self) -> Result<SdpSession, Error>;
+    pub fn create_answer(&mut self) -> Result<SdpSession, Error>;
+    pub fn set_local_description(&mut self, sdp: SdpSession) -> Result<(), Error>;
+    pub fn set_remote_description(&mut self, sdp: SdpSession) -> Result<(), Error>;
+    pub fn add_ice_candidate(&mut self, candidate: IceCandidate) -> Result<(), Error>;
+    pub fn add_track(&mut self, track: MediaStreamTrack) -> Result<RtpSender, Error>;
+    pub fn create_data_channel(&mut self, label: &str, config: DataChannelConfig) -> Result<DataChannel, Error>;
+    pub fn close(&mut self) -> Result<(), Error>;
+}
+
+Data Channels
+
+pub struct DataChannel {
+    label: String,
+    id: u16,
+    ordered: bool,
+    reliability: Reliability,
+    state: DataChannelState,
+    sctp: Arc<Mutex<SctpAssociation>>,
+    incoming: mpsc::UnboundedReceiver<DataChannelMessage>,
+}
+
+pub enum DataChannelState {
+    Connecting,
+    Open,
+    Closing,
+    Closed,
+}
+
+impl DataChannel {
+    pub fn send(&self, data: &[u8]) -> Result<(), Error>;
+    pub fn send_text(&self, text: &str) -> Result<(), Error>;
+    pub fn recv(&mut self) -> impl Future<Output = Option<DataChannelMessage>>;
+    pub fn close(&mut self) -> Result<(), Error>;
+    pub fn state(&self) -> DataChannelState;
+}
+
+pub enum DataChannelMessage {
+    Binary(Vec<u8>),
+    Text(String),
+}
+
+Media Streams
+
+pub struct MediaStreamTrack {
+    pub id: String,
+    pub kind: TrackKind,
+    pub sender: mpsc::UnboundedSender<MediaFrame>,
+    pub receiver: mpsc::UnboundedReceiver<MediaFrame>,
+}
+
+pub enum TrackKind {
+    Audio,
+    Video,
+}
+
+pub enum MediaFrame {
+    Audio(AudioFrame),
+    Video(VideoFrame),
+}
+
+pub struct RtpSender {
+    track: MediaStreamTrack,
+    ssrc: u32,
+    payload_type: u8,
+    packetizer: Box<dyn Packetizer>,
+}
+
+pub struct RtpReceiver {
+    track: MediaStreamTrack,
+    ssrc: u32,
+    jitter_buffer: JitterBuffer,
+    depacketizer: Box<dyn Packetizer>,
+}
+
+10. tpt-webrtc-capi (C Bindings)
+Purpose: C API for integration with C/C++ applications (FreeCAD, Blender, etc.).
+Dependencies: tpt-webrtc-app, cbindgen
+License: MIT
+C API
+
+#[no_mangle]
+pub extern "C" fn tpt_webrtc_peer_connection_new(config: *const TptWebRtcConfig) -> *mut PeerConnection {
+    // Implementation
+}
+
+#[no_mangle]
+pub extern "C" fn tpt_webrtc_peer_connection_create_offer(pc: *mut PeerConnection) -> TptWebRtcResult {
+    // Implementation
+}
+
+#[no_mangle]
+pub extern "C" fn tpt_webrtc_peer_connection_free(pc: *mut PeerConnection) {
+    // Implementation
+}
+
+// cbindgen generates tpt_webrtc.h from these definitions
+
+11. tpt-webrtc-py (Python Bindings)
+Purpose: Python API for scripting, automation, and data science.
+Dependencies: tpt-webrtc-app, pyo3
+License: MIT
+Python API
+
+#[pyclass]
+pub struct PyPeerConnection {
+    inner: PeerConnection,
+}
+
+#[pymethods]
+impl PyPeerConnection {
+    #[new]
+    fn new(config: PyWebRtcConfig) -> PyResult<Self> {
+        Ok(Self { inner: PeerConnection::new(config.into())? })
+    }
+
+    fn create_offer(&mut self) -> PyResult<PySdpSession> {
+        Ok(self.inner.create_offer()?.into())
+    }
+
+    fn create_answer(&mut self) -> PyResult<PySdpSession> {
+        Ok(self.inner.create_answer()?.into())
+    }
+
+    fn set_remote_description(&mut self, sdp: PySdpSession) -> PyResult<()> {
+        self.inner.set_remote_description(sdp.into())?;
+        Ok(())
+    }
+}
+
+// pyo3 generates Python module from these definitions
+
+Implementation Roadmap
+Phase 1: Foundation (Months 1-4)
+Deliverables:
+tpt-webrtc-core with async runtime and socket abstraction
+tpt-webrtc-sdp with full SDP parser/generator
+tpt-webrtc-ice with ICE agent, STUN client, basic TURN client
+Unit tests for all core components
+Formal verification contracts for ICE state machine (via tpt-telos)
+Milestone: Can establish ICE connectivity between two peers using STUN.
+Phase 2: Security & Transport (Months 5-8)
+Deliverables:
+tpt-webrtc-dtls with DTLS 1.2 handshake and SRTP key derivation
+tpt-webrtc-rtp with RTP/RTCP packetization and basic payload packetizers
+tpt-webrtc-sctp with SCTP over DTLS for data channels
+Formal verification contracts for DTLS state machine (via tpt-telos)
+Integration tests for DTLS-SRTP pipeline
+Milestone: Can establish secure DTLS connection and send encrypted RTP packets.
+Phase 3: Codecs & Media (Months 9-14)
+Deliverables:
+tpt-webrtc-codecs with AV1 encoder/decoder (via rav1e/dav1d)
+VP8/VP9 support (via vpx)
+Opus audio codec
+Hardware acceleration backends (NVENC, QSV, VideoToolbox, VAAPI)
+tpt-webrtc-media with jitter buffer, bandwidth estimation (GCC, TWCC)
+Simulcast support
+Milestone: Can send and receive AV1 video and Opus audio with hardware acceleration.
+Phase 4: Application Layer (Months 15-18)
+Deliverables:
+tpt-webrtc-app with full PeerConnection API
+Data channels (reliable, unreliable, ordered, unordered)
+Media stream management
+Offer/answer model
+Signaling integration (WebSocket, HTTP)
+End-to-end tests with real WebRTC clients (Chrome, Firefox)
+Milestone: Can establish a full WebRTC connection with audio, video, and data channels.
+Phase 5: Advanced Features (Months 19-24)
+Deliverables:
+Audio processing (AEC, NS, AGC)
+Advanced bandwidth estimation (BBR)
+SVC (Scalable Video Coding)
+Network adaptation and congestion control
+Performance optimization and benchmarking
+Comprehensive documentation and examples
+Milestone: Production-ready WebRTC implementation with advanced features.
+Phase 6: Bindings & Ecosystem (Months 25-30)
+Deliverables:
+tpt-webrtc-capi with C API (via cbindgen)
+tpt-webrtc-py with Python bindings (via pyo3)
+Go bindings (via C API or rust2go)
+Integration examples for FreeCAD, Blender, Python scripts
+Community outreach and adoption
+Milestone: Drop-in replacement for libwebrtc in C++, Python, and Go ecosystems.
+Licensing Strategy
+Dependency Audit
+Component
+License
+Status
+tokio
+MIT
+✅ Safe
+ring
+MIT + OpenSSL
+✅ Safe (MIT option)
+rav1e
+BSD-2-Clause
+✅ Safe
+dav1d
+BSD-2-Clause
+✅ Safe
+vpx (libvpx)
+BSD-3-Clause
+✅ Safe
+opus (libopus)
+BSD-3-Clause
+✅ Safe
+pyo3
+MIT
+✅ Safe
+cbindgen
+MPL-2.0
+⚠️ Check compatibility
+Compliance Checks
+
+# Run cargo-deny to verify no GPL/Apache-only dependencies
+cargo deny check licenses
+
+# Configuration in deny.toml:
+[licenses]
+allow = ["MIT", "0BSD", "BSD-2-Clause", "BSD-3-Clause", "Zlib", "ISC", "MPL-2.0"]
+deny = ["GPL-3.0", "AGPL-3.0", "Apache-2.0"]
+
+H.264 Avoidance Strategy
+Do NOT implement H.264 encoding/decoding. The MPEG-LA patent pool requires royalty payments for H.264 distributors. Instead:
+Use AV1 (royalty-free, Alliance for Open Media)
+Use VP8/VP9 (Google's open codecs)
+Document clearly that H.264 is not supported due to patent licensing
+Success Metrics
+Protocol Compliance: 100% pass rate on WebRTC interoperability tests (W3C test suite)
+Performance: Match or exceed libwebrtc performance on standard benchmarks
+Interoperability: Successfully connect with Chrome, Firefox, Safari, and libwebrtc clients
+Security: Zero memory safety vulnerabilities (guaranteed by Rust + formal verification)
+Licensing: Zero GPL or Apache-only dependencies in entire dependency tree
+Adoption: At least 3 production integrations (FreeCAD, Blender, or enterprise telehealth) within 12 months of release
+The tpt-telos Advantage
+This is where your agentic compiler becomes a massive differentiator.
+The ICE and DTLS state machines are the most critical and error-prone parts of WebRTC. Traditional implementations (like libwebrtc) have had numerous CVEs due to state machine bugs.
+With tpt-telos, you can write formal contracts:
+
+#[requires(agent.state == IceState::Gathering)]
+#[ensures(result.is_ok() ==> agent.state == IceState::Waiting || agent.state == IceState::Failed)]
+#[ensures(result.is_err() ==> agent.state == IceState::Failed)]
+pub fn gather_candidates(agent: &mut IceAgent) -> Result<Vec<IceCandidate>, IceError>;
+
