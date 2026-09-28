@@ -1,0 +1,46 @@
+# cargo-deny configuration for tpt-webrtc.
+#
+# License policy (see todo.md deviation note): dependencies licensed
+# `MIT OR Apache-2.0` pass via their MIT branch, but bare Apache-2.0-only
+# dependencies are deliberately NOT allowed and must be reviewed manually.
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "0BSD",
+    "Unicode-3.0",
+]
+# Everything not in `allow` is denied. In particular, GPL-3.0 / AGPL-3.0
+# and bare Apache-2.0-only dependencies are intentionally NOT allowed and
+# must be reviewed manually before being added to the tree.
+confidence-threshold = 0.93
+
+# MANUAL REVIEW CALL (per todo.md deviation policy): ring declares
+# "Apache-2.0 AND ISC". The Apache-2.0 portion is code ring sourced from
+# BoringSSL (see its LICENSE file); the surrounding work is ISC. ring is the
+# crypto provider mandated by todo.md/spec.txt, so it is allowed here as an
+# explicit, auditable exception — not by loosening the global allow-list.
+[[licenses.exceptions]]
+name = "ring"
+allow = ["Apache-2.0", "ISC"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

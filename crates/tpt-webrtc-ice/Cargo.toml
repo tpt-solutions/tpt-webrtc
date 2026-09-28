@@ -1,0 +1,20 @@
+[package]
+name = "tpt-webrtc-ice"
+description = "ICE agent (RFC 8445) with STUN (RFC 8489) and TURN (RFC 8656) client support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tpt-webrtc-core = { workspace = true }
+tpt-webrtc-sdp = { workspace = true }
+ring = { workspace = true }
+getrandom = { workspace = true }
+tokio = { workspace = true }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

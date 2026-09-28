@@ -27,25 +27,28 @@
 
 (one-time)
 
-- [ ] Create root `Cargo.toml` workspace (`resolver = "2"`,
+- [x] Create root `Cargo.toml` workspace (`resolver = "2"`,
       `[workspace.package]`: `edition = "2021"`, `license = "MIT OR Apache-2.0"`,
       `authors = ["TPT Solutions"]`)
-- [ ] Add `rust-toolchain.toml`
-- [ ] Add `rustfmt.toml`
-- [ ] Add `deny.toml`:
+- [x] Add `rust-toolchain.toml`
+- [x] Add `rustfmt.toml`
+- [x] Add `deny.toml`:
       `allow = ["MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "MPL-2.0"]`
-      (bare `"Apache-2.0"` intentionally **not** in the allow-list),
-      `deny = ["GPL-3.0", "AGPL-3.0"]`
-- [ ] Add `.github/workflows/ci.yml` (fmt, clippy, test, deny check)
-- [ ] Add `LICENSE-MIT` and `LICENSE-APACHE`
-- [ ] Create empty `crates/` directory
-- [ ] Add a Rust `.gitignore` (`/target`, etc.)
-- [ ] Write root `README.md` stub — mission statement (AV1-first, zero
+      (bare `"Apache-2.0"` intentionally **not** in the allow-list; modern
+      cargo-deny dropped the `deny` key — everything unlisted is denied.
+      ring is allowed via an explicit per-crate `[[licenses.exceptions]]`
+      entry: it declares `Apache-2.0 AND ISC`, the Apache part being
+      BoringSSL-sourced code — the "manual call" the policy asks for)
+- [x] Add `.github/workflows/ci.yml` (fmt, clippy, test, deny check)
+- [x] Add `LICENSE-MIT` and `LICENSE-APACHE`
+- [x] Create empty `crates/` directory
+- [x] Add a Rust `.gitignore` (`/target`, etc.)
+- [x] Write root `README.md` stub — mission statement (AV1-first, zero
       libwebrtc, memory-safe, formally-verified core state machines); link
       to `spec.txt`
-- [ ] `git init` (local only, unless/until a remote is decided)
-- [ ] Initial commit
-- [ ] Sanity check: `cargo build` succeeds on the empty workspace
+- [x] `git init` (local only, unless/until a remote is decided)
+- [x] Initial commit
+- [x] Sanity check: `cargo build` succeeds on the empty workspace
 
 ## Per-Crate Checklist Template
 
@@ -69,60 +72,67 @@ Every crate phase below repeats this shape:
 
 ### tpt-webrtc-core
 
-- [ ] Scaffold `crates/tpt-webrtc-core/`
-- [ ] Wire deps: `tokio`, `ring`
-- [ ] Implement `WebRtcConfig`, `IceServer`, `BweAlgorithm`
-- [ ] Implement `WebRtcSocket` trait (async UDP/TCP socket abstraction)
-- [ ] Implement error types: `WebRtcError`, `IceError`, `DtlsError`
+- [x] Scaffold `crates/tpt-webrtc-core/`
+- [x] Wire deps: `tokio`, `ring`
+- [x] Implement `WebRtcConfig`, `IceServer`, `BweAlgorithm`
+- [x] Implement `WebRtcSocket` trait (async UDP/TCP socket abstraction)
+- [x] Implement error types: `WebRtcError`, `IceError`, `DtlsError`
       (+ `RtpError`, `SctpError`, `CodecError`, `SdpError` stubs used by later crates)
-- [ ] Cryptographic primitive helpers (via `ring`) for later crates
-- [ ] Unit tests + doctests
-- [ ] Rustdoc
-- [ ] `cargo fmt` / `clippy` clean
-- [ ] `cargo deny check` clean
+- [x] Cryptographic primitive helpers (via `ring`) for later crates
+      (digests, HMAC-SHA1/256, MD5, CRC-32, constant-time eq, self-signed
+      ECDSA P-256 `DtlsCertificate` with minimal DER encoding)
+- [x] Unit tests + doctests
+- [x] Rustdoc
+- [x] `cargo fmt` / `clippy` clean
+- [x] `cargo deny check` clean
 
 ### tpt-webrtc-sdp
 
-- [ ] Scaffold `crates/tpt-webrtc-sdp/`
-- [ ] Wire deps: `tpt-webrtc-core`
-- [ ] Implement `SdpSession`, `Origin`, `Timing`, `MediaDescription`
-- [ ] Implement `Attribute` enum (RtpMap, Fmtp, IceUfrag, IcePwd, IceCandidate,
+- [x] Scaffold `crates/tpt-webrtc-sdp/`
+- [x] Wire deps: `tpt-webrtc-core`
+- [x] Implement `SdpSession`, `Origin`, `Timing`, `MediaDescription`
+- [x] Implement `Attribute` enum (RtpMap, Fmtp, IceUfrag, IcePwd, IceCandidate,
       Fingerprint, Setup, Mid, Bundle, RtcpMux, Simulcast, ExtMap, Ssrc,
-      SsrcGroup, Custom)
-- [ ] Implement `parse_sdp` / `generate_sdp` (RFC 8866)
-- [ ] Implement BUNDLE and RTCP-MUX SDP extensions
-- [ ] Implement `OfferAnswerModel` (`create_offer`, `create_answer`,
+      SsrcGroup, Custom, + Direction)
+- [x] Implement `parse_sdp` / `generate_sdp` (RFC 8866)
+- [x] Implement BUNDLE and RTCP-MUX SDP extensions
+- [x] Implement `OfferAnswerModel` (`create_offer`, `create_answer`,
       `negotiate_codecs`) and `CodecNegotiation`
-- [ ] Unit tests + doctests (round-trip parse/generate, offer/answer fixtures)
-- [ ] Rustdoc
-- [ ] `cargo fmt` / `clippy` clean
-- [ ] `cargo deny check` clean
+- [x] Unit tests + doctests (round-trip parse/generate, offer/answer fixtures)
+- [x] Rustdoc
+- [x] `cargo fmt` / `clippy` clean
+- [x] `cargo deny check` clean
 
 ### tpt-webrtc-ice
 
-- [ ] Scaffold `crates/tpt-webrtc-ice/`
-- [ ] Wire deps: `tpt-webrtc-core`, `tpt-webrtc-sdp`, `ring`/`getrandom`
+- [x] Scaffold `crates/tpt-webrtc-ice/`
+- [x] Wire deps: `tpt-webrtc-core`, `tpt-webrtc-sdp`, `ring`/`getrandom`
       (transaction IDs — see deviation note above)
-- [ ] Implement `IceState` enum and `IceAgent` (state, local/remote candidates,
+- [x] Implement `IceState` enum and `IceAgent` (state, local/remote candidates,
       candidate pairs, nominated pair, embedded `StunClient`/`TurnClient`)
-- [ ] Implement `IceAgent::gather_candidates`, `add_remote_candidate`,
+- [x] Implement `IceAgent::gather_candidates`, `add_remote_candidate`,
       `check_connectivity`, `nominate_pair`, `state`
-- [ ] Implement `StunMessage`, `StunMessageType`, `StunAttribute` (RFC 8489)
-- [ ] Implement `StunClient` (`create_binding_request`, `parse_message`,
+- [x] Implement `StunMessage`, `StunMessageType`, `StunAttribute` (RFC 8489)
+- [x] Implement `StunClient` (`create_binding_request`, `parse_message`,
       `serialize_message`, `verify_integrity`)
-- [ ] Implement basic `TurnClient` (`allocate`, `create_permission`,
+- [x] Implement basic `TurnClient` (`allocate`, `create_permission`,
       `send_indication`, `refresh`) and `TurnAllocation` (RFC 8656)
-- [ ] Candidate gathering (host, server-reflexive via STUN, relay via TURN),
+- [x] Candidate gathering (host, server-reflexive via STUN, relay via TURN),
       pairing, and nomination logic
-- [ ] Unit tests + doctests (STUN encode/decode round-trip, state transitions)
-- [ ] Integration test: two in-process `IceAgent`s connect over loopback via a
-      local STUN server
-- [ ] Rustdoc
-- [ ] `cargo fmt` / `clippy` clean
-- [ ] `cargo deny check` clean
-- [ ] *(non-blocking)* Write `ice.telos` contract for the `IceAgent` state
+- [x] Unit tests + doctests (STUN encode/decode round-trip, state transitions;
+      MESSAGE-INTEGRITY + FINGERPRINT validated against the RFC 5769 §2.1
+      test vector)
+- [x] Integration test: two in-process `IceAgent`s connect over loopback via a
+      local STUN server (gather host+srflx, pair, check, nominate; negative
+      tests for wrong credentials and missing remote candidates)
+- [x] Rustdoc
+- [x] `cargo fmt` / `clippy` clean
+- [x] `cargo deny check` clean
+- [x] *(non-blocking)* Write `ice.telos` contract for the `IceAgent` state
       machine (gather → waiting/failed, checking → connected/failed
       transitions) and verify with `telos verify`
+      — done: `telos verify contracts/ice.telos` reports "all constraints
+      satisfied" (state enum encoded as integers for the QF_LRA solver)
 
 ---
 

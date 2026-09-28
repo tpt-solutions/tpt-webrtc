@@ -1,0 +1,110 @@
+// ICE agent state-machine contracts for tpt-telos.
+//
+// Modeled for the `telos` CLI (QF_LRA): the IceAgent enum states are encoded
+// as integers so the linear-arithmetic solver can reason about transitions.
+//
+//   0 = New, 1 = Gathering, 2 = Waiting, 3 = Checking, 4 = Connected,
+//   5 = Completed, 6 = Failed, 7 = Disconnected, 8 = Closed
+//
+// These are the formal counterparts of the Rust implementation in
+// crates/tpt-webrtc-ice/src/agent.rs (spec.txt: "Formal Verification via
+// tpt-telos"). Branching outcomes are expressed as separate success/failure
+// functions because telos mutate blocks are straight-line. Per todo.md this
+// is a NON-BLOCKING gate: the ordinary Rust unit/integration tests are the
+// phase's correctness gate.
+//
+// Verify with:  telos verify contracts/ice.telos
+
+@boundary(ice_agent)
+module IceAgent {
+    // The encoded phase always stays within the enum's range, and a
+    // nominated pair only exists over at least one candidate pair.
+    invariant StateBounds {
+        phase >= 0
+        phase <= 8
+        pairs >= 0
+        nominated_pairs >= 0
+        nominated_pairs <= 1
+        nominated_pairs <= pairs
+    }
+
+    // (The "Completed implies exactly one nominated pair" and "Failed
+    // implies none" properties are enforced by the per-function `ensures`
+    // contracts below; QF_LRA invariants here are conjunctive.)
+    // gather_candidates(), success path: only a fresh agent may gather; it
+    // ends Waiting with at least one (host) candidate gathered.
+    func gather_candidates_ok(s: Agent)
+        requires s.phase == 0
+        ensures s.phase == 2
+        ensures s.pairs >= 1
+    {
+        mutate state {
+            s.phase = 2
+            s.pairs = 1
+        }
+    }
+
+    // gather_candidates(), failure path: no socket could be bound, so the
+    // agent fails without candidates.
+    func gather_candidates_fail(s: Agent)
+        requires s.phase == 0
+        ensures s.phase == 6
+        ensures s.pairs == 0
+    {
+        mutate state {
+            s.phase = 6
+            s.pairs = 0
+        }
+    }
+
+    // check_connectivity(), success path: with the remote ICE credentials
+    // set, the checks nominate exactly one pair and the agent completes.
+    func check_connectivity_success(s: Agent)
+        requires s.phase >= 2
+        requires s.phase <= 4
+        requires s.pairs >= 1
+        ensures s.phase == 5
+        ensures s.nominated_pairs == 1
+    {
+        mutate state {
+            s.phase = 5
+            s.nominated_pairs = 1
+        }
+    }
+
+    // check_connectivity(), failure path: the deadline elapsed without a
+    // nomination, so the agent fails and nothing is nominated.
+    func check_connectivity_failure(s: Agent)
+        requires s.phase >= 2
+        requires s.phase <= 4
+        ensures s.phase == 6
+        ensures s.nominated_pairs == 0
+    {
+        mutate state {
+            s.phase = 6
+            s.nominated_pairs = 0
+        }
+    }
+
+    // nominate_pair(): only succeeds once at least one pair has succeeded;
+    // nomination pins exactly one pair.
+    func nominate_pair(s: Agent, succeeded_pairs: Int)
+        requires s.phase == 3
+        requires succeeded_pairs >= 1
+        ensures s.nominated_pairs == 1
+    {
+        mutate state {
+            s.nominated_pairs = 1
+        }
+    }
+
+    // close(): terminal from anywhere; a closed agent nominates nothing.
+    func close(s: Agent)
+        ensures s.phase == 8
+    {
+        mutate state {
+            s.phase = 8
+            s.nominated_pairs = 0
+        }
+    }
+}

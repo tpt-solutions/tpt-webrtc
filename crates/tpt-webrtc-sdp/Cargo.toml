@@ -1,0 +1,12 @@
+[package]
+name = "tpt-webrtc-sdp"
+description = "SDP parser/generator (RFC 8866) with BUNDLE/RTCP-MUX extensions and the WebRTC offer/answer model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tpt-webrtc-core = { workspace = true }

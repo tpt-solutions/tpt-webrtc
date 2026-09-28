@@ -1,0 +1,17 @@
+[package]
+name = "tpt-webrtc-core"
+description = "Foundation layer for tpt-webrtc: configuration, socket abstraction, error taxonomy and cryptographic primitives"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+ring = { workspace = true }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
