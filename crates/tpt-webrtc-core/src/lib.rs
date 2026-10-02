@@ -21,7 +21,8 @@ pub use candidate::{CandidateType, IceCandidate};
 pub use config::{BweAlgorithm, CodecKind, CodecPreferences, IceServer, WebRtcConfig};
 pub use crypto::{
     constant_time_eq, crc32_ieee, ecdsa_der_to_fixed, ecdsa_fixed_to_der, hmac_sha1, hmac_sha256,
-    md5, random_bytes, random_u32, random_u64, sha1, sha256, DtlsCertificate, Fingerprint,
+    md5, p256_point_from_der_cert, random_bytes, random_u32, random_u64, sha1, sha256,
+    verify_with_p256_point, DtlsCertificate, Fingerprint,
 };
 pub use error::{
     CodecError, DtlsError, IceError, PacketizerError, RtpError, SctpError, SdpError, SrtpError,

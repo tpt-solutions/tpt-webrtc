@@ -69,6 +69,15 @@ pub enum DtlsError {
     /// Cryptographic primitive failure.
     #[error("crypto failure")]
     Crypto,
+    /// SRTP key material has the wrong length for the negotiated cipher.
+    #[error("invalid SRTP key material")]
+    SrtpKeyMaterial,
+    /// SRTP authentication tag mismatch.
+    #[error("SRTP authentication failed")]
+    SrtpAuthFailed,
+    /// SRTP replayed packet (index below the replay window / already seen).
+    #[error("SRTP replay detected")]
+    SrtpReplay,
 }
 
 /// Errors from the RTP layer.

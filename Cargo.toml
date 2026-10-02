@@ -4,6 +4,7 @@ members = [
     "crates/tpt-webrtc-core",
     "crates/tpt-webrtc-sdp",
     "crates/tpt-webrtc-ice",
+    "crates/tpt-webrtc-dtls",
 ]
 
 [workspace.package]
@@ -18,6 +19,7 @@ rust-version = "1.75"
 tpt-webrtc-core = { path = "crates/tpt-webrtc-core", version = "0.1.0" }
 tpt-webrtc-sdp = { path = "crates/tpt-webrtc-sdp", version = "0.1.0" }
 tpt-webrtc-ice = { path = "crates/tpt-webrtc-ice", version = "0.1.0" }
+tpt-webrtc-dtls = { path = "crates/tpt-webrtc-dtls", version = "0.1.0" }
 tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "macros", "time", "sync", "io-util"] }
 ring = "0.17"
 getrandom = "0.2"

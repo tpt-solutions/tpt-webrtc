@@ -1,0 +1,18 @@
+[package]
+name = "tpt-webrtc-dtls"
+description = "DTLS 1.2 (RFC 6347) with DTLS-SRTP key export (RFC 5764/5705) and SRTP sessions (RFC 3711)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tpt-webrtc-core = { workspace = true }
+ring = { workspace = true }
+aes = "0.8"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { workspace = true }
