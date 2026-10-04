@@ -37,7 +37,11 @@ pub fn random(buf: &mut [u8]) -> Result<(), tpt_webrtc_core::DtlsError> {
 
 /// Computes the TLS 1.2 master secret from the ECDHE pre-master secret.
 #[must_use]
-pub fn master_secret(pre_master: &[u8], client_random: &[u8; 32], server_random: &[u8; 32]) -> Vec<u8> {
+pub fn master_secret(
+    pre_master: &[u8],
+    client_random: &[u8; 32],
+    server_random: &[u8; 32],
+) -> Vec<u8> {
     let mut seed = Vec::with_capacity(64);
     seed.extend_from_slice(client_random);
     seed.extend_from_slice(server_random);
@@ -77,7 +81,11 @@ pub fn key_block(master: &[u8], client_random: &[u8; 32], server_random: &[u8; 3
 
 /// The RFC 5705 exporter master secret.
 #[must_use]
-pub fn exporter_master_secret(master: &[u8], client_random: &[u8; 32], server_random: &[u8; 32]) -> Vec<u8> {
+pub fn exporter_master_secret(
+    master: &[u8],
+    client_random: &[u8; 32],
+    server_random: &[u8; 32],
+) -> Vec<u8> {
     let mut seed = Vec::with_capacity(64);
     seed.extend_from_slice(client_random);
     seed.extend_from_slice(server_random);
@@ -106,9 +114,7 @@ pub fn export_keying_material(
 /// # Errors
 /// Returns [`tpt_webrtc_core::DtlsError::InvalidState`] when the key
 /// material has the wrong length (never for the 60-byte export).
-pub fn srtp_keys_from_export(
-    export: &[u8],
-) -> Result<crate::SrtpKeys, tpt_webrtc_core::DtlsError> {
+pub fn srtp_keys_from_export(export: &[u8]) -> Result<crate::SrtpKeys, tpt_webrtc_core::DtlsError> {
     if export.len() != 60 {
         return Err(tpt_webrtc_core::DtlsError::InvalidState);
     }

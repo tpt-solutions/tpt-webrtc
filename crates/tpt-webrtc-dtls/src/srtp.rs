@@ -42,6 +42,8 @@ pub struct SrtpSession {
     auth_key: Vec<u8>,
     /// Roll-over counter (protect: current; unprotect: highest seen).
     roc: u32,
+    /// Last protected sequence number (protect-side ROC detection).
+    last_seq: Option<u16>,
     /// Replay tracking (bitfield over recent indices below `highest_index`).
     replay: u64,
     /// Highest 48-bit index seen (unprotect).
@@ -85,6 +87,7 @@ impl SrtpSession {
             salt,
             auth_key,
             roc: 0,
+            last_seq: None,
             replay: 0,
             highest_index: 0,
             rtcp_index: 0,
@@ -104,6 +107,13 @@ impl SrtpSession {
         }
         let ssrc = u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]);
         let seq = u16::from_be_bytes([packet[2], packet[3]]);
+        // ROC advances when the 16-bit sequence wraps.
+        if let Some(prev) = self.last_seq {
+            if seq < prev {
+                self.roc = self.roc.wrapping_add(1);
+            }
+        }
+        self.last_seq = Some(seq);
 
         match self.cipher {
             SrtpCipher::Aes128CmHmacSha1_80 | SrtpCipher::Aes256CmHmacSha1_80 => {
@@ -119,7 +129,13 @@ impl SrtpSession {
             }
             SrtpCipher::AeadAes128Gcm | SrtpCipher::AeadAes256Gcm => {
                 let iv = aead_iv(&self.salt, ssrc, self.roc, seq);
-                let ct = gcm_crypt(&self.enc_key, &iv, &packet[..hdr_len], &packet[hdr_len..], true)?;
+                let ct = gcm_crypt(
+                    &self.enc_key,
+                    &iv,
+                    &packet[..hdr_len],
+                    &packet[hdr_len..],
+                    true,
+                )?;
                 let mut out = packet[..hdr_len].to_vec();
                 out.extend_from_slice(&ct); // ciphertext || tag
                 Ok(out)
@@ -226,11 +242,7 @@ impl SrtpSession {
                 let ssrc = u32::from_be_bytes([body[4], body[5], body[6], body[7]]);
                 let iv = rtcp_iv(&self.salt, ssrc, index);
                 let mut out = body[..8].to_vec();
-                out.extend_from_slice(&aes_cm_crypt(
-                    &self.enc_key,
-                    &iv,
-                    &body[8..body.len() - 4],
-                ));
+                out.extend_from_slice(&aes_cm_crypt(&self.enc_key, &iv, &body[8..body.len() - 4]));
                 Ok(out)
             }
             SrtpCipher::AeadAes128Gcm | SrtpCipher::AeadAes256Gcm => {
@@ -265,7 +277,10 @@ impl SrtpSession {
     fn estimate_index(&self, seq: u16) -> Index {
         let candidate = (u64::from(self.roc) << 16) | u64::from(seq);
         if self.highest_index == 0 || candidate + REPLAY_WINDOW > self.highest_index {
-            Index { roc: self.roc, index: candidate }
+            Index {
+                roc: self.roc,
+                index: candidate,
+            }
         } else {
             Index {
                 roc: self.roc.wrapping_add(1),
@@ -280,7 +295,11 @@ impl SrtpSession {
         }
         if index.index > self.highest_index {
             let shift = index.index - self.highest_index;
-            self.replay = if shift >= 64 { 0 } else { self.replay << shift };
+            self.replay = if shift >= 64 {
+                1
+            } else {
+                (self.replay << shift) | 1
+            };
             self.highest_index = index.index;
             self.roc = index.roc;
             return Ok(());
@@ -456,12 +475,14 @@ fn gcm_crypt(
         )
         .map_err(|_| DtlsError::Crypto)?;
     } else {
-        key.open_in_place(
-            aead::Nonce::assume_unique_for_key(*nonce),
-            aead::Aad::from(aad),
-            &mut in_out,
-        )
-        .map_err(|_| DtlsError::SrtpAuthFailed)?;
+        let msg = key
+            .open_in_place(
+                aead::Nonce::assume_unique_for_key(*nonce),
+                aead::Aad::from(aad),
+                &mut in_out,
+            )
+            .map_err(|_| DtlsError::SrtpAuthFailed)?;
+        return Ok(msg.to_vec());
     }
     Ok(in_out)
 }
@@ -490,8 +511,21 @@ mod tests {
 
     #[test]
     fn cm_rtp_roundtrip() {
-        let mut enc = SrtpSession::new(keys(), true, Direction::Protect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
-        let mut dec = SrtpSession::new(keys(), true, Direction::Unprotect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
+        let mut enc = SrtpSession::new(
+            keys(),
+            true,
+            Direction::Protect,
+            SrtpCipher::Aes128CmHmacSha1_80,
+        )
+        .unwrap();
+        // The receiving side (server) unprotected with the client's key.
+        let mut dec = SrtpSession::new(
+            keys(),
+            false,
+            Direction::Unprotect,
+            SrtpCipher::Aes128CmHmacSha1_80,
+        )
+        .unwrap();
         let packet = rtp_packet(1000, b"opus frame data");
         let protected = enc.protect_rtp(&packet).unwrap();
         assert_eq!(protected.len(), packet.len() + TAG_80);
@@ -502,13 +536,28 @@ mod tests {
 
     #[test]
     fn cm_rtp_rejects_tampering_and_replay() {
-        let mut enc = SrtpSession::new(keys(), true, Direction::Protect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
-        let mut dec = SrtpSession::new(keys(), true, Direction::Unprotect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
+        let mut enc = SrtpSession::new(
+            keys(),
+            true,
+            Direction::Protect,
+            SrtpCipher::Aes128CmHmacSha1_80,
+        )
+        .unwrap();
+        let mut dec = SrtpSession::new(
+            keys(),
+            false,
+            Direction::Unprotect,
+            SrtpCipher::Aes128CmHmacSha1_80,
+        )
+        .unwrap();
         let packet = rtp_packet(1001, b"x");
         let mut protected = enc.protect_rtp(&packet).unwrap();
         let last = protected.len() - 1;
         protected[last] ^= 0xFF;
-        assert_eq!(dec.unprotect_rtp(&protected), Err(DtlsError::SrtpAuthFailed));
+        assert_eq!(
+            dec.unprotect_rtp(&protected),
+            Err(DtlsError::SrtpAuthFailed)
+        );
 
         let good = enc.protect_rtp(&packet).unwrap();
         assert!(dec.unprotect_rtp(&good).is_ok());
@@ -517,8 +566,20 @@ mod tests {
 
     #[test]
     fn cm_rtp_sequence_rollover_estimates_roc() {
-        let mut enc = SrtpSession::new(keys(), true, Direction::Protect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
-        let mut dec = SrtpSession::new(keys(), true, Direction::Unprotect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
+        let mut enc = SrtpSession::new(
+            keys(),
+            true,
+            Direction::Protect,
+            SrtpCipher::Aes128CmHmacSha1_80,
+        )
+        .unwrap();
+        let mut dec = SrtpSession::new(
+            keys(),
+            false,
+            Direction::Unprotect,
+            SrtpCipher::Aes128CmHmacSha1_80,
+        )
+        .unwrap();
         let last = enc.protect_rtp(&rtp_packet(0xFFFF, b"a")).unwrap();
         assert!(dec.unprotect_rtp(&last).is_ok());
         let first = enc.protect_rtp(&rtp_packet(0x0001, b"b")).unwrap();
@@ -527,8 +588,20 @@ mod tests {
 
     #[test]
     fn cm_rtcp_roundtrip() {
-        let mut enc = SrtpSession::new(keys(), true, Direction::Protect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
-        let mut dec = SrtpSession::new(keys(), true, Direction::Unprotect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
+        let mut enc = SrtpSession::new(
+            keys(),
+            true,
+            Direction::Protect,
+            SrtpCipher::Aes128CmHmacSha1_80,
+        )
+        .unwrap();
+        let mut dec = SrtpSession::new(
+            keys(),
+            false,
+            Direction::Unprotect,
+            SrtpCipher::Aes128CmHmacSha1_80,
+        )
+        .unwrap();
         let mut packet = vec![0x81, 200, 0, 7]; // SR, 7 words
         packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
         packet.extend_from_slice(&[0u8; 24]);
@@ -540,8 +613,15 @@ mod tests {
 
     #[test]
     fn gcm_rtp_roundtrip() {
-        let mut enc = SrtpSession::new(keys(), true, Direction::Protect, SrtpCipher::AeadAes128Gcm).unwrap();
-        let mut dec = SrtpSession::new(keys(), true, Direction::Unprotect, SrtpCipher::AeadAes128Gcm).unwrap();
+        let mut enc =
+            SrtpSession::new(keys(), true, Direction::Protect, SrtpCipher::AeadAes128Gcm).unwrap();
+        let mut dec = SrtpSession::new(
+            keys(),
+            false,
+            Direction::Unprotect,
+            SrtpCipher::AeadAes128Gcm,
+        )
+        .unwrap();
         let packet = rtp_packet(2000, b"vp8 payload");
         let protected = enc.protect_rtp(&packet).unwrap();
         assert_eq!(protected.len(), packet.len() + TAG_GCM);
@@ -551,10 +631,15 @@ mod tests {
 
     #[test]
     fn gcm_rtp_header_is_aad_not_encrypted() {
-        let mut enc = SrtpSession::new(keys(), true, Direction::Protect, SrtpCipher::AeadAes128Gcm).unwrap();
+        let mut enc =
+            SrtpSession::new(keys(), true, Direction::Protect, SrtpCipher::AeadAes128Gcm).unwrap();
         let packet = rtp_packet(2001, b"payload");
         let protected = enc.protect_rtp(&packet).unwrap();
-        assert_eq!(&protected[..12], &packet[..12], "header is authenticated but clear");
+        assert_eq!(
+            &protected[..12],
+            &packet[..12],
+            "header is authenticated but clear"
+        );
         assert_ne!(&protected[12..], &packet[12..]);
     }
 

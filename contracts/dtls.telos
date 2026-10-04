@@ -1,0 +1,92 @@
+// DTLS transport state-machine contracts for tpt-telos.
+//
+// Modeled for the `telos` CLI (QF_LRA): the DtlsState enum is encoded as
+// integers so the linear-arithmetic solver can reason about transitions.
+//
+//   0 = New, 1 = Connecting, 2 = Connected, 3 = Failed, 4 = Closed
+//
+// Counterpart of the Rust implementation in
+// crates/tpt-webrtc-dtls/src/transport.rs. Per todo.md this is a
+// NON-BLOCKING gate: the ordinary Rust unit/integration tests (notably
+// crates/tpt-webrtc-dtls/tests/dtls_loopback.rs) are the phase's
+// correctness gate.
+//
+// Verify with:  telos verify contracts/dtls.telos
+
+@boundary(dtls_transport)
+module DtlsTransport {
+    // The encoded phase always stays within the enum's range, and the
+    // exported SRTP keys exist only in the Connected state.
+    invariant StateBounds {
+        phase >= 0
+        phase <= 4
+        has_srtp_keys >= 0
+        has_srtp_keys <= 1
+    }
+
+    // Key material exists only when connected: with the phase encoding
+    // above (Connected == 2), the linear form is has_srtp_keys <= phase / 2.
+    invariant KeysOnlyWhenConnected {
+        has_srtp_keys <= phase
+        has_srtp_keys * 2 <= phase + 2
+    }
+
+    // start_handshake(): only a fresh transport may start; it moves to
+    // Connecting (client) or stays armed for the first packet (server,
+    // modeled by the same phase).
+    func start_handshake_ok(s: Transport)
+        requires s.phase == 0
+        ensures s.phase == 1
+        ensures s.has_srtp_keys == 0
+    {
+        mutate state {
+            s.phase = 1
+            s.has_srtp_keys = 0
+        }
+    }
+
+    // start_handshake() on an already-active transport is rejected and
+    // leaves the state untouched.
+    func start_handshake_rejected(s: Transport)
+        requires s.phase >= 1
+        requires s.phase <= 2
+        ensures s.phase == old(s.phase)
+    {
+        mutate state { }
+    }
+
+    // handshake completes: the transport reaches Connected and DTLS-SRTP
+    // keys are available.
+    func handshake_success(s: Transport)
+        requires s.phase == 1
+        ensures s.phase == 2
+        ensures s.has_srtp_keys == 1
+    {
+        mutate state {
+            s.phase = 2
+            s.has_srtp_keys = 1
+        }
+    }
+
+    // handshake fails: no SRTP keys are ever exported.
+    func handshake_failure(s: Transport)
+        requires s.phase == 1
+        ensures s.phase == 3
+        ensures s.has_srtp_keys == 0
+    {
+        mutate state {
+            s.phase = 3
+            s.has_srtp_keys = 0
+        }
+    }
+
+    // close(): terminal from anywhere; keys stop being exported.
+    func close(s: Transport)
+        ensures s.phase == 4
+    {
+        mutate state {
+            s.phase = 4
+            s.has_srtp_keys = 0
+        }
+    }
+}

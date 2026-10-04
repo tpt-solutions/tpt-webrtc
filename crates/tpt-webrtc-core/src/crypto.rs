@@ -237,8 +237,7 @@ pub fn crc32_ieee(data: &[u8]) -> u32 {
 /// Returns [`DtlsError::Crypto`] on verification failure.
 pub fn verify_with_p256_point(point: &[u8], msg: &[u8], der_sig: &[u8]) -> Result<(), DtlsError> {
     let fixed = ecdsa_der_to_fixed(der_sig).ok_or(DtlsError::Crypto)?;
-    let pub_key =
-        signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, point);
+    let pub_key = signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, point);
     pub_key.verify(msg, &fixed).map_err(|_| DtlsError::Crypto)
 }
 

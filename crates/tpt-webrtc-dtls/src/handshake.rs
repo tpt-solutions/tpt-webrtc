@@ -177,8 +177,8 @@ impl Extension {
                 }
                 Self::SupportedGroups(groups)
             }
-            11 => Self::EcPointFormats(body.get(1).map_or_else(Vec::new, |n| {
-                body.get(2..2 + usize::from(*n)).unwrap_or(&[]).to_vec()
+            11 => Self::EcPointFormats(body.first().map_or_else(Vec::new, |n| {
+                body.get(1..1 + usize::from(*n)).unwrap_or(&[]).to_vec()
             })),
             13 => {
                 let mut algs = Vec::new();
@@ -483,7 +483,10 @@ impl ServerKeyExchange {
         if data.len() < i + slen {
             return Err(DtlsError::InvalidState);
         }
-        Ok(Self { point, signature: data[i..i + slen].to_vec() })
+        Ok(Self {
+            point,
+            signature: data[i..i + slen].to_vec(),
+        })
     }
 }
 
@@ -512,7 +515,9 @@ impl ClientKeyExchange {
         if data.is_empty() || data.len() < 1 + data[0] as usize {
             return Err(DtlsError::InvalidState);
         }
-        Ok(Self { point: data[1..1 + data[0] as usize].to_vec() })
+        Ok(Self {
+            point: data[1..1 + data[0] as usize].to_vec(),
+        })
     }
 }
 
@@ -541,7 +546,9 @@ impl Finished {
         if data.is_empty() || data.len() < 1 + data[0] as usize {
             return Err(DtlsError::InvalidState);
         }
-        Ok(Self { verify_data: data[1..1 + data[0] as usize].to_vec() })
+        Ok(Self {
+            verify_data: data[1..1 + data[0] as usize].to_vec(),
+        })
     }
 }
 
@@ -574,7 +581,9 @@ impl HelloVerifyRequest {
         if data.len() < 3 + clen {
             return Err(DtlsError::InvalidState);
         }
-        Ok(Self { cookie: data[3..3 + clen].to_vec() })
+        Ok(Self {
+            cookie: data[3..3 + clen].to_vec(),
+        })
     }
 }
 
@@ -667,28 +676,42 @@ mod tests {
 
     #[test]
     fn certificate_roundtrip() {
-        let cert = CertificateMessage { certificates: vec![vec![0x30, 0x82, 1, 2, 3, 4]] };
+        let cert = CertificateMessage {
+            certificates: vec![vec![0x30, 0x82, 1, 2, 3, 4]],
+        };
         let body = cert.serialize();
         assert_eq!(CertificateMessage::parse(&body).unwrap(), cert);
     }
 
     #[test]
     fn key_exchange_and_finished_roundtrip() {
-        let ske = ServerKeyExchange { point: vec![4u8; 65], signature: vec![0x30, 1, 2] };
+        let ske = ServerKeyExchange {
+            point: vec![4u8; 65],
+            signature: vec![0x30, 1, 2],
+        };
         let body = ske.serialize();
         assert_eq!(ServerKeyExchange::parse(&body).unwrap(), ske);
-        assert_eq!(ServerKeyExchange::parse(&body).unwrap().signed_params(), ske.signed_params());
+        assert_eq!(
+            ServerKeyExchange::parse(&body).unwrap().signed_params(),
+            ske.signed_params()
+        );
 
-        let cke = ClientKeyExchange { point: vec![4u8; 65] };
+        let cke = ClientKeyExchange {
+            point: vec![4u8; 65],
+        };
         assert_eq!(ClientKeyExchange::parse(&cke.serialize()).unwrap(), cke);
 
-        let fin = Finished { verify_data: vec![0xAB; 12] };
+        let fin = Finished {
+            verify_data: vec![0xAB; 12],
+        };
         assert_eq!(Finished::parse(&fin.serialize()).unwrap(), fin);
     }
 
     #[test]
     fn hello_verify_request_roundtrip() {
-        let hvr = HelloVerifyRequest { cookie: vec![9u8; 16] };
+        let hvr = HelloVerifyRequest {
+            cookie: vec![9u8; 16],
+        };
         let body = hvr.serialize();
         assert_eq!(HelloVerifyRequest::parse(&body).unwrap(), hvr);
     }

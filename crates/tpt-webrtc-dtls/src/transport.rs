@@ -15,7 +15,8 @@ use ring::agreement;
 use ring::rand::SystemRandom;
 
 use crate::handshake::{
-    self, CertificateMessage, ClientKeyExchange, Finished, HandshakeHeader, HandshakeType, Hello, HelloVerifyRequest, ServerKeyExchange,
+    self, CertificateMessage, ClientKeyExchange, Finished, HandshakeHeader, HandshakeType, Hello,
+    HelloVerifyRequest, ServerKeyExchange,
 };
 use crate::prf;
 use crate::record::{content_type, RecordLayer};
@@ -226,7 +227,8 @@ impl DtlsTransport {
             offset += 13 + len;
 
             let ctype = record[0];
-            let epoch = u16::from_be_bytes([record[2], record[3]]);
+            // type(1) version(2) epoch(2) seq(6) length(2)
+            let epoch = u16::from_be_bytes([record[3], record[4]]);
             let (_, _, plain) = self.record.unprotect(record)?;
             match ctype {
                 content_type::HANDSHAKE => {
@@ -243,7 +245,12 @@ impl DtlsTransport {
         Ok(if out.is_empty() { None } else { Some(out) })
     }
 
-    fn on_handshake(&mut self, plain: &[u8], epoch: u16, out: &mut Vec<u8>) -> Result<(), DtlsError> {
+    fn on_handshake(
+        &mut self,
+        plain: &[u8],
+        epoch: u16,
+        out: &mut Vec<u8>,
+    ) -> Result<(), DtlsError> {
         let header = HandshakeHeader::parse(plain)?;
         let msg_type = HandshakeType::from_u8(header.msg_type);
         let body = plain[handshake::HANDSHAKE_HEADER_LEN..].to_vec();
@@ -285,7 +292,10 @@ impl DtlsTransport {
                 }
                 (DtlsRole::Client, HandshakeType::ServerKeyExchange) => {
                     let ske = ServerKeyExchange::parse(&body)?;
-                    let peer_cert = self.peer_cert_der.as_ref().ok_or(DtlsError::HandshakeFailed)?;
+                    let peer_cert = self
+                        .peer_cert_der
+                        .as_ref()
+                        .ok_or(DtlsError::HandshakeFailed)?;
                     // Signature over client_random || server_random || params,
                     // verified with the peer certificate's public key (the
                     // fingerprint in SDP is the actual authentication).
@@ -365,14 +375,19 @@ impl DtlsTransport {
                     content_type::CHANGE_CIPHER_SPEC,
                     &[1],
                 ));
+                // The server's Finished covers the transcript *including*
+                // the client's Finished, so recompute the hash.
                 let seq = self.take_seq();
+                let hash = tpt_webrtc_core::sha256(&self.transcript);
                 let verify = prf::prf_sha256(&master, b"server finished", &hash, 12);
-                let fin =
-                    handshake::wrap(
-                        HandshakeType::Finished,
-                        seq,
-                        &Finished { verify_data: verify }.serialize(),
-                    );
+                let fin = handshake::wrap(
+                    HandshakeType::Finished,
+                    seq,
+                    &Finished {
+                        verify_data: verify,
+                    }
+                    .serialize(),
+                );
                 self.record_transcript(&fin);
                 let encrypted = self.record.protect(content_type::HANDSHAKE, &fin)?;
                 out.extend_from_slice(&encrypted);
@@ -396,27 +411,27 @@ impl DtlsTransport {
             let hvr_body = HelloVerifyRequest { cookie }.serialize();
             let seq = self.take_seq();
             let msg = handshake::wrap(HandshakeType::HelloVerifyRequest, seq, &hvr_body);
-            out.extend_from_slice(&RecordLayer::plaintext_record(content_type::HANDSHAKE, &msg));
+            out.extend_from_slice(&RecordLayer::plaintext_record(
+                content_type::HANDSHAKE,
+                &msg,
+            ));
             return Ok(());
         }
 
         if self.transcript.is_empty() {
-            self.record_transcript(
-                // The transcript uses the received CH as-is; rebuild the
-                // full message bytes from the caller-provided slice.
-                &{
-                    let header = HandshakeHeader {
-                        msg_type: HandshakeType::ClientHello.to_u8(),
-                        length: body.len() as u32,
-                        message_seq: 1,
-                        fragment_offset: 0,
-                        fragment_length: body.len() as u32,
-                    };
-                    let mut m = header.serialize();
-                    m.extend_from_slice(body);
-                    m
-                },
-            );
+            // The transcript uses the received CH as-is; rebuild the full
+            // message bytes from the parsed hello.
+            self.client_random = hello.random;
+            let header = HandshakeHeader {
+                msg_type: HandshakeType::ClientHello.to_u8(),
+                length: body.len() as u32,
+                message_seq: 1,
+                fragment_offset: 0,
+                fragment_length: body.len() as u32,
+            };
+            let mut m = header.serialize();
+            m.extend_from_slice(body);
+            self.record_transcript(&m);
         }
         prf::random(&mut self.server_random)?;
         let (priv_key, pub_key) = generate_ecdhe()?;
@@ -436,7 +451,10 @@ impl DtlsTransport {
         };
         let ske = ServerKeyExchange {
             point: pub_key.clone(),
-            signature: self.config.certificate.sign(&self.ske_signature_input(&pub_key))?,
+            signature: self
+                .config
+                .certificate
+                .sign(&self.ske_signature_input(&pub_key))?,
         };
         for (ty, msg_body) in [
             (HandshakeType::ServerHello, server_hello.serialize(false)),
@@ -479,7 +497,10 @@ impl DtlsTransport {
         let seq = self.take_seq();
         let cert_msg = handshake::wrap(HandshakeType::Certificate, seq, &cert_body);
         self.record_transcript(&cert_msg);
-        out.extend_from_slice(&RecordLayer::plaintext_record(content_type::HANDSHAKE, &cert_msg));
+        out.extend_from_slice(&RecordLayer::plaintext_record(
+            content_type::HANDSHAKE,
+            &cert_msg,
+        ));
 
         let cke_body = ClientKeyExchange {
             point: self.ecdhe_public.clone(),
@@ -488,7 +509,10 @@ impl DtlsTransport {
         let seq = self.take_seq();
         let cke_msg = handshake::wrap(HandshakeType::ClientKeyExchange, seq, &cke_body);
         self.record_transcript(&cke_msg);
-        out.extend_from_slice(&RecordLayer::plaintext_record(content_type::HANDSHAKE, &cke_msg));
+        out.extend_from_slice(&RecordLayer::plaintext_record(
+            content_type::HANDSHAKE,
+            &cke_msg,
+        ));
 
         out.extend_from_slice(&RecordLayer::plaintext_record(
             content_type::CHANGE_CIPHER_SPEC,
@@ -503,10 +527,13 @@ impl DtlsTransport {
         let verify = prf::prf_sha256(&master, b"client finished", &hash, 12);
         let seq = self.take_seq();
         let fin = handshake::wrap(
-                        HandshakeType::Finished,
-                        seq,
-                        &Finished { verify_data: verify }.serialize(),
-                    );
+            HandshakeType::Finished,
+            seq,
+            &Finished {
+                verify_data: verify,
+            }
+            .serialize(),
+        );
         self.record_transcript(&fin);
         let encrypted = self.record.protect(content_type::HANDSHAKE, &fin)?;
         out.extend_from_slice(&encrypted);
@@ -514,9 +541,13 @@ impl DtlsTransport {
     }
 
     fn activate_keys(&mut self) {
-        let master = self.master_secret.clone().expect("keys after master secret");
+        let master = self
+            .master_secret
+            .clone()
+            .expect("keys after master secret");
         let keys = prf::key_block(&master, &self.client_random, &self.server_random);
-        self.record.activate(self.config.role == DtlsRole::Client, &keys);
+        self.record
+            .activate(self.config.role == DtlsRole::Client, &keys);
     }
 
     fn export_srtp_keys(&mut self) -> Result<(), DtlsError> {
@@ -570,9 +601,8 @@ impl DtlsTransport {
 
 fn generate_ecdhe() -> Result<(agreement::EphemeralPrivateKey, Vec<u8>), DtlsError> {
     let rng = SystemRandom::new();
-    let private =
-        agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng)
-            .map_err(|_| DtlsError::Crypto)?;
+    let private = agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng)
+        .map_err(|_| DtlsError::Crypto)?;
     let public = private
         .compute_public_key()
         .map_err(|_| DtlsError::Crypto)?;

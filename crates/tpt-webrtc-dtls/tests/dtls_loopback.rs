@@ -8,6 +8,9 @@ use tpt_webrtc_dtls::{DtlsConfig, DtlsRole, DtlsState, DtlsTransport};
 
 /// Drives the flight exchange until both transports are connected.
 async fn handshake(a: &mut DtlsTransport, b: &mut DtlsTransport) {
+    // Both transports must arm themselves: the server transitions to
+    // Connecting (and waits), the client produces flight 1.
+    assert!(b.start_handshake().await.unwrap().is_none());
     let mut datagram = a.start_handshake().await.unwrap().expect("client flight 1");
     let mut a_to_b = true;
     for _ in 0..16 {
@@ -22,7 +25,10 @@ async fn handshake(a: &mut DtlsTransport, b: &mut DtlsTransport) {
     }
 }
 
-fn client_config(cert: &DtlsCertificate, server_fp: Option<tpt_webrtc_core::Fingerprint>) -> DtlsConfig {
+fn client_config(
+    cert: &DtlsCertificate,
+    server_fp: Option<tpt_webrtc_core::Fingerprint>,
+) -> DtlsConfig {
     DtlsConfig {
         certificate: cert.clone(),
         role: DtlsRole::Client,
@@ -30,7 +36,10 @@ fn client_config(cert: &DtlsCertificate, server_fp: Option<tpt_webrtc_core::Fing
     }
 }
 
-fn server_config(cert: &DtlsCertificate, client_fp: Option<tpt_webrtc_core::Fingerprint>) -> DtlsConfig {
+fn server_config(
+    cert: &DtlsCertificate,
+    client_fp: Option<tpt_webrtc_core::Fingerprint>,
+) -> DtlsConfig {
     DtlsConfig {
         certificate: cert.clone(),
         role: DtlsRole::Server,
@@ -73,8 +82,14 @@ async fn full_handshake_exports_matching_srtp_keys() {
 async fn application_data_roundtrip() {
     let client_cert = DtlsCertificate::generate().unwrap();
     let server_cert = DtlsCertificate::generate().unwrap();
-    let mut client = DtlsTransport::new(client_config(&client_cert, Some(server_cert.fingerprint().unwrap())));
-    let mut server = DtlsTransport::new(server_config(&server_cert, Some(client_cert.fingerprint().unwrap())));
+    let mut client = DtlsTransport::new(client_config(
+        &client_cert,
+        Some(server_cert.fingerprint().unwrap()),
+    ));
+    let mut server = DtlsTransport::new(server_config(
+        &server_cert,
+        Some(client_cert.fingerprint().unwrap()),
+    ));
     handshake(&mut client, &mut server).await;
     assert_eq!(client.state(), DtlsState::Connected);
 
@@ -95,8 +110,12 @@ async fn wrong_fingerprint_is_rejected() {
     let server_cert = DtlsCertificate::generate().unwrap();
     let other = DtlsCertificate::generate().unwrap();
 
-    let mut client = DtlsTransport::new(client_config(&client_cert, Some(other.fingerprint().unwrap())));
+    let mut client = DtlsTransport::new(client_config(
+        &client_cert,
+        Some(other.fingerprint().unwrap()),
+    ));
     let mut server = DtlsTransport::new(server_config(&server_cert, None));
+    assert!(server.start_handshake().await.unwrap().is_none());
     let mut datagram = client.start_handshake().await.unwrap().unwrap();
 
     // Drive until the client sees the server certificate.
@@ -113,7 +132,9 @@ async fn wrong_fingerprint_is_rejected() {
         if is_err {
             break;
         }
-        let Some(resp) = result.as_ref().unwrap().as_ref().unwrap() else { break };
+        let Some(resp) = result.as_ref().unwrap().as_ref().unwrap() else {
+            break;
+        };
         datagram = resp.clone();
         a_to_b = !a_to_b;
     }
@@ -147,8 +168,20 @@ fn srtp_sessions_protect_rtp_end_to_end() {
     }
     let keys = tpt_webrtc_dtls::prf::srtp_keys_from_export(&export).unwrap();
 
-    let mut tx = SrtpSession::new(keys.clone(), true, Direction::Protect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
-    let mut rx = SrtpSession::new(keys.clone(), true, Direction::Unprotect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
+    let mut tx = SrtpSession::new(
+        keys.clone(),
+        true,
+        Direction::Protect,
+        SrtpCipher::Aes128CmHmacSha1_80,
+    )
+    .unwrap();
+    let mut rx = SrtpSession::new(
+        keys.clone(),
+        false,
+        Direction::Unprotect,
+        SrtpCipher::Aes128CmHmacSha1_80,
+    )
+    .unwrap();
 
     let mut rtp = vec![0x80, 0x60, 0, 42, 0, 0, 1, 0, 1, 2, 3, 4];
     rtp.extend_from_slice(b"media payload");
@@ -156,8 +189,20 @@ fn srtp_sessions_protect_rtp_end_to_end() {
     assert_eq!(rx.unprotect_rtp(&protected).unwrap(), rtp);
 
     // Server-protected (client-unprotect) direction uses the other key pair.
-    let mut srv = SrtpSession::new(keys.clone(), false, Direction::Protect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
-    let mut cli = SrtpSession::new(keys, true, Direction::Unprotect, SrtpCipher::Aes128CmHmacSha1_80).unwrap();
+    let mut srv = SrtpSession::new(
+        keys.clone(),
+        false,
+        Direction::Protect,
+        SrtpCipher::Aes128CmHmacSha1_80,
+    )
+    .unwrap();
+    let mut cli = SrtpSession::new(
+        keys,
+        true,
+        Direction::Unprotect,
+        SrtpCipher::Aes128CmHmacSha1_80,
+    )
+    .unwrap();
     let protected = srv.protect_rtp(&rtp).unwrap();
     assert_eq!(cli.unprotect_rtp(&protected).unwrap(), rtp);
 }

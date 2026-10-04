@@ -54,8 +54,7 @@ impl RecordLayer {
     pub fn activate(&mut self, is_client: bool, keys: &WriteKeys) {
         let make = |key: &[u8], iv: &[u8], seq: u64| CipherState {
             key: aead::LessSafeKey::new(
-                aead::UnboundKey::new(&aead::AES_128_GCM, key)
-                    .expect("16-byte AES-128 key"),
+                aead::UnboundKey::new(&aead::AES_128_GCM, key).expect("16-byte AES-128 key"),
             ),
             static_iv: iv.to_vec(),
             next_seq: seq,
@@ -121,7 +120,7 @@ impl RecordLayer {
         out.push(content_type);
         out.extend_from_slice(&DTLS_1_2_VERSION);
         out.extend_from_slice(&1u16.to_be_bytes());
-        out.extend_from_slice(&(seq as u64).to_be_bytes()[2..8]); // 48-bit seq
+        out.extend_from_slice(&seq.to_be_bytes()[2..8]); // 48-bit seq
         out.extend_from_slice(&((8 + in_out.len()) as u16).to_be_bytes()); // explicit nonce + ct + tag
         out.extend_from_slice(&nonce[4..12]); // explicit nonce part
         out.extend_from_slice(&in_out);
@@ -142,8 +141,9 @@ impl RecordLayer {
             return Err(DtlsError::InvalidState);
         }
         let content_type = data[0];
-        let epoch = u16::from_be_bytes([data[2], data[3]]);
-        let seq = u64::from_be_bytes([0, 0, data[4], data[5], data[6], data[7], data[8], data[9]]);
+        // Layout: type(1) version(2) epoch(2) seq(6) length(2).
+        let epoch = u16::from_be_bytes([data[3], data[4]]);
+        let seq = u64::from_be_bytes([0, 0, data[5], data[6], data[7], data[8], data[9], data[10]]);
         let len = u16::from_be_bytes([data[11], data[12]]) as usize;
         if data.len() < 13 + len {
             return Err(DtlsError::InvalidState);
@@ -182,7 +182,7 @@ impl RecordLayer {
 fn aad(content_type: u8, seq: u64, plaintext_len: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(13);
     out.extend_from_slice(&1u16.to_be_bytes());
-    out.extend_from_slice(&(seq as u64).to_be_bytes()[2..8]);
+    out.extend_from_slice(&seq.to_be_bytes()[2..8]);
     out.push(content_type);
     out.extend_from_slice(&DTLS_1_2_VERSION);
     out.extend_from_slice(&(plaintext_len as u16).to_be_bytes());
@@ -214,10 +214,14 @@ mod tests {
         let mut client = RecordLayer::new();
         let mut server = RecordLayer::new();
         client.activate(true, &keys());
-        server.activate(true, &keys());
+        server.activate(false, &keys());
 
-        let r1 = client.protect(content_type::APPLICATION_DATA, b"hello").unwrap();
-        let r2 = client.protect(content_type::APPLICATION_DATA, b"world").unwrap();
+        let r1 = client
+            .protect(content_type::APPLICATION_DATA, b"hello")
+            .unwrap();
+        let r2 = client
+            .protect(content_type::APPLICATION_DATA, b"world")
+            .unwrap();
         assert_ne!(r1, r2, "sequence numbers must differ");
 
         let (ty, epoch, plain) = server.unprotect(&r1).unwrap();
@@ -232,8 +236,10 @@ mod tests {
         let mut client = RecordLayer::new();
         let mut server = RecordLayer::new();
         client.activate(true, &keys());
-        server.activate(true, &keys());
-        let mut rec = client.protect(content_type::APPLICATION_DATA, b"secret").unwrap();
+        server.activate(false, &keys());
+        let mut rec = client
+            .protect(content_type::APPLICATION_DATA, b"secret")
+            .unwrap();
         let last = rec.len() - 1;
         rec[last] ^= 0xFF;
         assert_eq!(server.unprotect(&rec), Err(DtlsError::DecryptionFailed));
