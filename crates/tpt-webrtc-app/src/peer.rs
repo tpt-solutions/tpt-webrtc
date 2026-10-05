@@ -91,6 +91,8 @@ pub struct PeerConnection {
     /// Negotiated: whether we are the offerer.
     is_offerer: bool,
     outbox: VecDeque<Vec<u8>>,
+    /// Last DTLS flight we sent (for quiet-time retransmission).
+    last_dtls_flight: Option<Vec<u8>>,
 }
 
 impl PeerConnection {
@@ -133,6 +135,7 @@ impl PeerConnection {
             local_candidates: Vec::new(),
             is_offerer: true,
             outbox: VecDeque::new(),
+            last_dtls_flight: None,
         })
     }
 
@@ -375,9 +378,7 @@ impl PeerConnection {
         message: &DataChannelMessage,
     ) -> Result<(), WebRtcError> {
         if self.sctp.state() != SctpState::Established {
-            return Err(WebRtcError::Sctp(
-                tpt_webrtc_core::SctpError::InvalidState,
-            ));
+            return Err(WebRtcError::Sctp(tpt_webrtc_core::SctpError::InvalidState));
         }
         let (ppid, payload) = match message {
             DataChannelMessage::Text(t) => (tpt_webrtc_sctp::PPID_STRING, t.clone().into_bytes()),
@@ -479,6 +480,7 @@ impl PeerConnection {
             DatagramKind::Stun => { /* consumed inside recv_raw */ }
             DatagramKind::Dtls => {
                 if let Ok(Some(response)) = self.dtls.process_packet(data).await {
+                    self.last_dtls_flight = Some(response.clone());
                     self.outbox.push_back(response);
                 }
                 if self.dtls.state() == DtlsState::Connected && self.srtp_tx.is_none() {
@@ -561,6 +563,7 @@ impl PeerConnection {
             .await
             .map_err(WebRtcError::from)?
         {
+            self.last_dtls_flight = Some(flight.clone());
             self.outbox.push_back(flight);
         }
         Ok(())
@@ -611,6 +614,11 @@ impl PeerConnection {
             .check_connectivity(timeout)
             .await
             .map_err(WebRtcError::from)?;
+        // Quiet-time retransmission: DTLS flights and the SCTP INIT go out
+        // unreliably; when no state progress happens within 500 ms, resend
+        // the last flight (and/or the INIT) until progress or deadline.
+        let mut last_snapshot = (self.dtls.state(), self.sctp.state());
+        let mut last_activity = Instant::now();
         while Instant::now() < deadline {
             self.poll(POLL_STEP).await;
             self.start_dtls_if_needed().await?;
@@ -619,6 +627,27 @@ impl PeerConnection {
             }
             if self.peer_state == PeerConnectionState::Failed {
                 return Err(WebRtcError::Ice(IceError::ConnectivityCheckFailed));
+            }
+            let snapshot = (self.dtls.state(), self.sctp.state());
+            if snapshot != last_snapshot {
+                last_snapshot = snapshot;
+                last_activity = Instant::now();
+            } else if last_activity.elapsed() >= Duration::from_millis(500) {
+                last_activity = Instant::now();
+                if self.dtls.state() == DtlsState::Connecting {
+                    if let Some(flight) = &self.last_dtls_flight {
+                        self.outbox.push_back(flight.clone());
+                    }
+                }
+                if self.dtls.state() == DtlsState::Connected
+                    && self.sctp.state() != SctpState::Established
+                    && !self.is_offerer
+                {
+                    let init = self.sctp.build_init();
+                    if let Ok(wire) = self.dtls.send_application_data(&init).await {
+                        self.outbox.push_back(wire);
+                    }
+                }
             }
         }
         Err(WebRtcError::Ice(IceError::NominationTimeout))

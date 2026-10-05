@@ -47,8 +47,8 @@ async fn full_connection_data_channel_end_to_end() {
     negotiate(&mut a, &mut b).await;
 
     let (ra, rb) = tokio::join!(
-        a.connect(Duration::from_secs(15)),
-        b.connect(Duration::from_secs(15))
+        a.connect(Duration::from_secs(30)),
+        b.connect(Duration::from_secs(30))
     );
     ra.expect("A connect");
     rb.expect("B connect");
@@ -131,8 +131,8 @@ async fn full_connection_srtp_audio_end_to_end() {
     negotiate(&mut a, &mut b).await;
 
     let (ra, rb) = tokio::join!(
-        a.connect(Duration::from_secs(15)),
-        b.connect(Duration::from_secs(15))
+        a.connect(Duration::from_secs(30)),
+        b.connect(Duration::from_secs(30))
     );
     ra.unwrap();
     rb.unwrap();

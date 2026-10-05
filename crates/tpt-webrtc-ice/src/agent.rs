@@ -2,6 +2,7 @@
 //! nomination (RFC 8445), with STUN server-reflexive gathering (RFC 8489)
 //! and TURN relay gathering (RFC 8656).
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -178,6 +179,9 @@ pub struct IceAgent {
     nominated: Option<CandidatePair>,
     /// Set once a nominating check (USE-CANDIDATE) has actually been sent.
     nominated_check_sent: bool,
+    /// Non-STUN datagrams received while the data path wasn't being
+    /// drained (e.g. a peer's DTLS ClientHello racing our last checks).
+    pending_raw: VecDeque<(Vec<u8>, SocketAddr)>,
     turn: Option<TurnClient>,
 }
 
@@ -208,6 +212,7 @@ impl IceAgent {
             pair_socket: Vec::new(),
             nominated: None,
             nominated_check_sent: false,
+            pending_raw: VecDeque::new(),
             turn: None,
         }
     }
@@ -574,6 +579,9 @@ impl IceAgent {
     /// `dur`. Post-connection, non-STUN datagrams are application data;
     /// STUN datagrams are handled internally (consent/role races).
     pub async fn recv_raw(&mut self, dur: Duration) -> Option<(Vec<u8>, std::net::SocketAddr)> {
+        if let Some(buffered) = self.pending_raw.pop_front() {
+            return Some(buffered);
+        }
         for si in 0..self.sockets.len() {
             let received = {
                 let incoming = &mut self.sockets[si].incoming;
@@ -587,6 +595,7 @@ impl IceAgent {
                 }
                 return Some((data, src));
             }
+            // Fall through to datagrams buffered during the check phase.
         }
         None
     }
@@ -659,7 +668,9 @@ impl IceAgent {
     }
 
     /// Receives one datagram (from any base socket) and drives the state
-    /// machine.
+    /// machine. Non-STUN datagrams are buffered for the data path
+    /// ([`recv_raw`](Self::recv_raw)) — they may be a peer's DTLS flight
+    /// racing our last connectivity checks.
     async fn recv_step(&mut self, dur: Duration) {
         for si in 0..self.sockets.len() {
             let received = {
@@ -667,7 +678,11 @@ impl IceAgent {
                 tokio::time::timeout(dur, incoming.recv()).await
             };
             if let Ok(Some((data, src))) = received {
-                self.handle_datagram(si, &data, src).await;
+                if data.len() >= 8 && data[4..8] == [0x21, 0x12, 0xA4, 0x42] {
+                    self.handle_datagram(si, &data, src).await;
+                } else {
+                    self.pending_raw.push_back((data, src));
+                }
                 return; // one datagram per step
             }
         }

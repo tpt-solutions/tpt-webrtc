@@ -20,6 +20,7 @@ pub use packet::RtpPacket;
 pub use packetizer::{
     Av1Packetizer, OpusPacketizer, Packetizer, VideoPacketizerContext, Vp8Packetizer, Vp9Packetizer,
 };
+pub use rtcp::feedback::{PayloadSpecificFeedback, TransportLayerFeedback};
 pub use rtcp::{
     FullIntraRequest, Nack, ReceiverReport, Remb, ReportBlock, RtcpPacket, SdesChunk, SenderReport,
     SourceDescription, TransportWideCongestionControl,
