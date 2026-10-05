@@ -1,0 +1,13 @@
+[package]
+name = "tpt-webrtc-rtp"
+description = "RTP/RTCP packetization, payload packetizers (AV1/VP8/VP9/Opus), RTCP feedback and the jitter buffer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tpt-webrtc-core = { workspace = true }
+tpt-webrtc-dtls = { workspace = true }
