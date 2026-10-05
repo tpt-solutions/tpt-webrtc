@@ -64,6 +64,10 @@ pub struct IceConfig {
     pub remote_ufrag: String,
     /// Remote password (learned via SDP before checking).
     pub remote_pwd: String,
+    /// Explicit local addresses for host candidates. When non-empty, the
+    /// route probe is skipped and sockets bind exactly here (useful for
+    /// servers and loopback tests).
+    pub local_addresses: Vec<std::net::IpAddr>,
 }
 
 impl IceConfig {
@@ -78,6 +82,7 @@ impl IceConfig {
             local_pwd: random_ice_string(24),
             remote_ufrag: String::new(),
             remote_pwd: String::new(),
+            local_addresses: Vec::new(),
         }
     }
 }
@@ -266,7 +271,12 @@ impl IceAgent {
         self.state = IceState::Gathering;
 
         let mut local_pref = 65_535u32;
-        for ip in local_ipv4_addrs(servers).await {
+        let probed = if self.config.local_addresses.is_empty() {
+            local_ipv4_addrs(servers).await
+        } else {
+            self.config.local_addresses.clone()
+        };
+        for ip in probed {
             let Ok(socket) = UdpWebRtcSocket::bind(SocketAddr::new(ip, 0)).await else {
                 continue;
             };
@@ -531,6 +541,62 @@ impl IceAgent {
         let pair = best.clone();
         self.nominated = Some(pair.clone());
         Ok(pair)
+    }
+
+    /// Sends raw bytes over the nominated pair (post-connection data
+    /// path: DTLS, RTP, RTCP ride the same 5-tuple as the checks).
+    ///
+    /// # Errors
+    /// [`IceError::InvalidState`] without a nominated pair;
+    /// [`IceError::ConnectivityCheckFailed`] on socket failure.
+    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), IceError> {
+        let nominated = self.nominated.as_ref().ok_or(IceError::InvalidState)?;
+        let socket_idx = self
+            .local_candidates
+            .iter()
+            .position(|l| *l == nominated.local)
+            .and_then(|li| self.base_index.get(li).copied())
+            .ok_or(IceError::InvalidState)?;
+        let socket = self
+            .sockets
+            .get(socket_idx)
+            .ok_or(IceError::InvalidState)?
+            .socket
+            .clone();
+        socket
+            .send_to(data, nominated.remote.address)
+            .await
+            .map(|_| ())
+            .map_err(|_| IceError::ConnectivityCheckFailed)
+    }
+
+    /// Receives one raw datagram from any base socket, waiting up to
+    /// `dur`. Post-connection, non-STUN datagrams are application data;
+    /// STUN datagrams are handled internally (consent/role races).
+    pub async fn recv_raw(&mut self, dur: Duration) -> Option<(Vec<u8>, std::net::SocketAddr)> {
+        for si in 0..self.sockets.len() {
+            let received = {
+                let incoming = &mut self.sockets[si].incoming;
+                tokio::time::timeout(dur, incoming.recv()).await
+            };
+            if let Ok(Some((data, src))) = received {
+                // STUN packets (magic cookie) are agent business.
+                if data.len() >= 8 && data[4..8] == [0x21, 0x12, 0xA4, 0x42] {
+                    self.handle_datagram(si, &data, src).await;
+                    continue;
+                }
+                return Some((data, src));
+            }
+        }
+        None
+    }
+
+    /// Whether a pair has been nominated (data path usable).
+    #[must_use]
+    pub fn has_nominated_pair(&self) -> bool {
+        self.nominated
+            .as_ref()
+            .is_some_and(|p| p.nominated && p.state == PairState::Succeeded)
     }
 
     /// Closes the agent.

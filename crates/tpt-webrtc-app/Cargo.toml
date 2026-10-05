@@ -1,0 +1,22 @@
+[package]
+name = "tpt-webrtc-app"
+description = "High-level PeerConnection API: SDP negotiation, ICE, DTLS-SRTP, SCTP data channels and RTP media in one place"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tpt-webrtc-core = { workspace = true }
+tpt-webrtc-sdp = { workspace = true }
+tpt-webrtc-ice = { workspace = true }
+tpt-webrtc-dtls = { workspace = true }
+tpt-webrtc-rtp = { workspace = true }
+tpt-webrtc-sctp = { workspace = true }
+tokio = { workspace = true }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
