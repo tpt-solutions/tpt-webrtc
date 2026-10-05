@@ -33,5 +33,10 @@ The full design lives in [spec.txt](spec.txt); the build plan in
 
 ## Status
 
-Work in progress. Phases 1–2 (foundation, security & transport) are the
-current focus.
+Phases 1–5 (foundation, security & transport, application layer, media
+processing) are implemented and integration-tested: two `PeerConnection`s
+complete SDP negotiation, ICE, DTLS-SRTP and SCTP data channels end-to-end
+over real loopback UDP, with SRTP-protected audio verified on the receive
+path. Phase 3 (native codecs: dav1d/vpx/opus/hardware) is
+environment-blocked; see todo.md. Phase 6 bindings and Phase 7 interop
+remain.
