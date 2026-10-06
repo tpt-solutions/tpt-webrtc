@@ -238,15 +238,20 @@ verified; SCTP data-channel exchange over DTLS-pipe verified.
 **Milestone: can send and receive AV1 video and Opus audio with hardware
 acceleration.**
 
-> **Blocker note (2026-10):** `dav1d`, `libvpx` and `libopus` require C
-> toolchains (meson/nasm or prebuilt libs) that this Windows/Git Bash
-> environment cannot provide; hardware backends need platform SDKs.
-> `rav1e` (pure Rust) is feasible, but without a decoder the AV1
-> round-trip cannot be verified here. Unblocking options: install
-> MSVC + vcpkg (dav1d/vpx/opus), develop in WSL/CI (Linux runners have
-> them packaged), or vendor prebuilt static libs. The media-processing
-> half of this phase (jitter buffer, BWE, simulcast scaling) landed
-> early with Phase 5's `tpt-webrtc-media` crate.
+> **Status (2026-10):** `tpt-webrtc-codecs` landed with the full trait
+> abstraction and a **working rav1e AV1 encoder** (pure Rust, tested on
+> Windows: keyframes, bitrate/speed/keyframe-interval controls, forced
+> keyframes, show-existing semantics). Decode-side `dav1d`/`vpx`/`opus`
+> FFI awaits a Linux environment: WSL was installed here but its
+> first-boot OOBE wedged the WSL service (vmmemWSL unkillable, service
+> restart needs admin) — **after a machine reboot**, run
+> `wsl --install -d Ubuntu --no-launch && ubuntu.exe install --root`
+> (or `wsl --import` a cloud-image rootfs tarball, which skips OOBE),
+> then `apt install libdav1d-dev libopus-dev libvpx-dev pkg-config` +
+> rustup, and implement the FFI modules behind a `native` feature.
+> Alternative: CI on ubuntu-latest where all three ship as packages.
+> The media half of this phase (jitter buffer, BWE, simulcast scaling)
+> already lives in `tpt-webrtc-media`.
 
 ### tpt-webrtc-codecs
 
