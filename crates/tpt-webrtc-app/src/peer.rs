@@ -93,6 +93,8 @@ pub struct PeerConnection {
     outbox: VecDeque<Vec<u8>>,
     /// Last DTLS flight we sent (for quiet-time retransmission).
     last_dtls_flight: Option<Vec<u8>>,
+    /// SCTP packets waiting to be wrapped in DTLS and flushed.
+    pending_sctp: VecDeque<Vec<u8>>,
 }
 
 impl PeerConnection {
@@ -136,6 +138,7 @@ impl PeerConnection {
             is_offerer: true,
             outbox: VecDeque::new(),
             last_dtls_flight: None,
+            pending_sctp: VecDeque::new(),
         })
     }
 
@@ -388,7 +391,7 @@ impl PeerConnection {
             .sctp
             .send(stream_id, &payload, ppid)
             .map_err(WebRtcError::from)?;
-        self.outbox.push_back(wire);
+        self.pending_sctp.push_back(wire);
         Ok(())
     }
 
@@ -468,6 +471,16 @@ impl PeerConnection {
     }
 
     async fn flush_outbox(&mut self) {
+        // Wrap queued SCTP packets in DTLS first.
+        while let Some(sctp) = self.pending_sctp.pop_front() {
+            match self.dtls.send_application_data(&sctp).await {
+                Ok(wire) => self.outbox.push_back(wire),
+                Err(_) => {
+                    self.pending_sctp.push_front(sctp);
+                    break;
+                }
+            }
+        }
         while let Some(data) = self.outbox.pop_front() {
             if self.ice.send_raw(&data).await.is_err() {
                 break; // socket gone; state refresh will report it

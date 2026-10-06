@@ -11,3 +11,7 @@ rust-version.workspace = true
 [dependencies]
 tpt-webrtc-core = { workspace = true }
 tpt-webrtc-dtls = { workspace = true }
+
+[[bench]]
+name = "throughput"
+harness = false

@@ -9,11 +9,14 @@
 //! enough for the Phase 5 "real algorithms" bar of this stack; heavier
 //! spectral methods can slot behind the same traits.
 
+pub mod adaptation;
 pub mod audio;
 pub mod bwe;
 pub mod simulcast;
 pub mod video;
 
+pub use adaptation::BitrateControl;
+pub use adaptation::CongestionController;
 pub use audio::{
     AcousticEchoCanceller, AdaptiveEchoCanceller, AutomaticGainControl, NoiseGate, NoiseSuppressor,
     PeakNormalizingAgc,
