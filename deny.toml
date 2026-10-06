@@ -33,6 +33,26 @@ confidence-threshold = 0.93
 name = "ring"
 allow = ["Apache-2.0", "ISC"]
 
+# MANUAL REVIEW CALL: rav1e's fuzzing/target-probe dev+build dependencies
+# carry permissive-but-unusual licenses:
+#   - libfuzzer-sys: (MIT OR Apache-2.0) AND NCSA — NCSA is a BSD-style
+#     university license (Apache-2.0-compatible, FSF-approved).
+#   - target-lexicon: Apache-2.0 WITH LLVM-exception — the standard
+#     Rust-ecosystem license (Apache-2.0 compatible).
+# Both are build-time-only (rav1e fuzzing hooks / pkg-config probing) and
+# never linked into release artifacts.
+[[licenses.exceptions]]
+name = "libfuzzer-sys"
+allow = ["MIT", "Apache-2.0", "NCSA"]
+
+[[licenses.exceptions]]
+name = "target-lexicon"
+allow = ["Apache-2.0 WITH LLVM-exception"]
+
+[[licenses.exceptions]]
+name = "cfg-expr"
+allow = ["Apache-2.0", "MIT"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
