@@ -7,6 +7,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+categories = ["cryptography", "network-programming", "asynchronous", "api-bindings"]
+keywords = ["webrtc", "dtls", "rfc6347", "dtls-srtp", "rfc5764", "srtp", "rfc3711", "tls", "encryption", "key-derivation"]
+readme = "README.md"
 
 [dependencies]
 tpt-webrtc-core = { workspace = true }

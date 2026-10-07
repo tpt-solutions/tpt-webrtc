@@ -7,6 +7,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+categories = ["network-programming", "parser-implementations", "api-bindings"]
+keywords = ["webrtc", "sdp", "rfc8866", "offer-answer", "bundle", "rtcp-mux", "simulcast"]
+readme = "README.md"
 
 [dependencies]
 tpt-webrtc-core = { workspace = true }

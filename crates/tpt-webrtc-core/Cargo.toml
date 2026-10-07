@@ -7,6 +7,9 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+categories = ["network-programming", "asynchronous", "cryptography", "api-bindings"]
+keywords = ["webrtc", "ice", "dtls", "srtp", "socket", "crypto", "async", "tokio"]
+readme = "README.md"
 
 [dependencies]
 tokio = { workspace = true }
